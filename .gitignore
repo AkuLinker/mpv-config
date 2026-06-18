@@ -1,0 +1,11 @@
+# Ignore local logs
+*.log
+
+# Cache (For example shadesrs like Anime4K and timestamps folders like watch_later and etc)
+*.cache/
+cache/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
