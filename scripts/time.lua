@@ -4,6 +4,8 @@
 -- Bind this script in your input.conf:
 -- n script-binding show-end-time
 
+local osd_duration = 3  -- OSD message duration in seconds
+
 local function show_end_time_fn()
     local clock_hour    = tonumber(os.date("%H"))
     local clock_minutes = tonumber(os.date("%M"))
@@ -26,7 +28,7 @@ local function show_end_time_fn()
 
     local message = string.format("Playback ends at: %02d:%02d", end_hour, end_min)
         mp.msg.info(message)
-        mp.osd_message(message)
+        mp.osd_message(message, osd_duration)
 end
 
 mp.add_key_binding(nil, "show-end-time", show_end_time_fn)
