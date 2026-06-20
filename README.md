@@ -9,7 +9,8 @@ Used scripts:
 Custom scripts:
 - google-translate.lua - Opens Google Translate in the browser with the current subtitle line.
 - sub-bg-toggle.lua - Toggles a black background behind subtitles with a single key press.
-- time.lua - Shows the estimated time at which the video will finish.
+- time.lua - Shows the estimated time at which the video will finish. Changed and shorted version of this one https://github.com/mustaqimM/mpv-scripts/blob/master/time.lua
+- seek_display.lua - Seeks and shows the actual position after the seek completes.
 
 A variety of shaders from various sources are also included.
 
@@ -23,9 +24,10 @@ A variety of shaders from various sources are also included.
 - thumbfast - https://github.com/po5/thumbfast - Добавляет поддержку мини изображений над полоской прогресса в плеере.
 - autoload - https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua - Добавляет в плейлист видео из директории.
 
-Мои личные скрипты:
+Мои скрипты:
 - google-translate.lua - Открывает в браузере гугл транслейт с текущим субтитром.
-- sub-bg-toggle.lua - добавляет чёрный фон субтитрам переключением одной кнопкой.
-- time.lua - Показывает время когда видео должно закончиться.
+- sub-bg-toggle.lua - Добавляет чёрный фон субтитрам переключением одной кнопкой.
+- time.lua - Показывает время когда видео должно закончиться. Изменёная урезанная версия этого скрипта https://github.com/mustaqimM/mpv-scripts/blob/master/time.lua
+- seek_display.lua - Перемотка с уведомлением в плеере с временем текущей позиции в видео.
 
 Также используется множество разных шейдеров взятых из разных мест.
