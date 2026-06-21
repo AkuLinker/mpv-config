@@ -5,6 +5,7 @@ Used scripts:
 - uosc - https://github.com/tomasklaen/uosc - The foundation. Handles the player UI.
 - thumbfast - https://github.com/po5/thumbfast - Adds thumbnail preview support above the progress bar.
 - autoload - https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua - Automatically adds videos from the current directory to the playlist.
+- sub-transition - https://github.com/Ajatt-Tools/sub-transition - Speeds up or skips the video when there's no subtitles.
 
 Custom scripts:
 - google-translate.lua - Opens Google Translate in the browser with the current subtitle line.
@@ -23,6 +24,7 @@ A variety of shaders from various sources are also included.
 - uosc - https://github.com/tomasklaen/uosc - Основа. Отвечает за UI плеера.
 - thumbfast - https://github.com/po5/thumbfast - Добавляет поддержку мини изображений над полоской прогресса в плеере.
 - autoload - https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua - Добавляет в плейлист видео из директории.
+- sub-transition - https://github.com/Ajatt-Tools/sub-transition - Ускоряет или скипает куски видео между субтитрами.
 
 Мои скрипты:
 - google-translate.lua - Открывает в браузере гугл транслейт с текущим субтитром.

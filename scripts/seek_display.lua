@@ -53,11 +53,10 @@ local function show_osd()
     end
 
     local arrow = last_amount >= 0 and "⏩" or "⏪"
-    local sign  = last_amount >= 0 and "+" or ""
 
     mp.osd_message(string.format(
-        "%s %s%d sec   %s / %s  (%d%%)",
-        arrow, sign, last_amount,
+        "%s %d sec   %s / %s  (%d%%)",
+        arrow, math.abs(last_amount),
         format_time(pos), format_time(duration), percent
     ), OSD_DURATION)
 end
