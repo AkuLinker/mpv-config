@@ -5,6 +5,9 @@
 *.cache/
 cache/
 
+# settings fuke for sub_transition
+script-opts/sub_transition.conf
+
 # OS specific files
 .DS_Store
 Thumbs.db
