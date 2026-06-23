@@ -31,6 +31,8 @@ local OSD_SETTLE_DELAY = 0.07
 local last_amount  = 0
 local settle_timer = nil
 
+local mp = require 'mp'
+
 local function format_time(seconds)
     if not seconds or seconds < 0 then seconds = 0 end
     local h = math.floor(seconds / 3600)
@@ -47,12 +49,20 @@ local function show_osd()
     local pos      = mp.get_property_number("time-pos") or 0
     local duration = mp.get_property_number("duration") or 0
 
+    local arrow = last_amount >= 0 and "⏩" or "⏪"
+
+    if mp.get_property_number("osd-level") >= 3 then
+        mp.osd_message(string.format(
+            "%s %d sec",
+            arrow, math.abs(last_amount)
+        ), OSD_DURATION)
+        return
+    end
+
     local percent = 0
     if duration > 0 then
         percent = math.floor((pos / duration) * 100 + 0.5)
     end
-
-    local arrow = last_amount >= 0 and "⏩" or "⏪"
 
     mp.osd_message(string.format(
         "%s %d sec   %s / %s  (%d%%)",
