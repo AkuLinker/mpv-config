@@ -31,7 +31,6 @@ char *strcpy(char *, const char *);
 size_t strlen(const char *s);
 ]]
 
-utils = require "mp.utils"
 
 local utils = require "mp.utils"
 local assdraw = require "mp.assdraw"
@@ -242,7 +241,10 @@ function compare_subs(a, b)
 end
 
 function tick(copy)
-    if copy == true and events == nil then copy_subs(mp.get_property_native("sub-text")) end
+    if copy == true and events == nil then
+        local text = mp.get_property_native("sub-text")
+        if text and text ~= "" then copy_subs(text) end
+    end
     if events == nil then return end
     if not mp.get_property_native("sub-visibility") then return mp.set_osd_ass(0, 0, "") end
     if options.paused_only and not mp.get_property_native("core-idle") then return mp.set_osd_ass(width, height, "") end
@@ -314,7 +316,7 @@ function tick(copy)
             if not show_all then break end
         end
     end
-    if copy == true then
+    if copy == true and #to_copy > 0 then
         copy_subs(table.concat(to_copy, "\n"))
     end
     mp.set_osd_ass(width, height, ass.text)
