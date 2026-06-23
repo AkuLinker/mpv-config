@@ -18,6 +18,22 @@ local self = {
     enabled = false,
 }
 
+-- Persistent status overlay
+local status_overlay = mp.create_osd_overlay and mp.create_osd_overlay('ass-events')
+
+local function show_overlay(text)
+    if not self.config or not self.config.notifications then return end
+    if not status_overlay then return end
+    status_overlay.data = '{\\an9\\fs18\\c&H00FFFF&}' .. text
+    status_overlay:update()
+end
+
+local function hide_overlay()
+    if not status_overlay then return end
+    status_overlay.data = ''
+    status_overlay:update()
+end
+
 local timers = {
     start_transition = timer.new(),
     end_transition = timer.new(),
@@ -30,7 +46,7 @@ local function start_transition()
     if mp.get_property_native("video-sync") == default_sync_property then
         mp.set_property("video-sync", "desync")
     end
-    h.notify { message = string.format("x%.1f", self.config.inter_speed), osd = self.config.notifications, }
+    show_overlay('>> fast-forward')
 end
 
 local function end_transition()
@@ -38,7 +54,7 @@ local function end_transition()
     if mp.get_property_native("video-sync") == "desync" then
         mp.set_property("video-sync", default_sync_property)
     end
-    h.notify { message = string.format("x%.1f", self.config.normal_speed), osd = self.config.notifications, }
+    show_overlay('>> transitions on')
 end
 
 local function reset_transition()
@@ -84,6 +100,7 @@ end
 local function skip_immediately(to_position)
     -- don't transition, just immediately skip to the next subtitle line.
     if not mp.get_property_bool("pause") then
+        show_overlay('>> skip')
         mp.commandv("seek", to_position, "absolute+exact")
     end
 end
@@ -126,11 +143,11 @@ local function toggle_enabled(val)
     if self.enabled then
         mp.observe_property("sub-end", "number", check_sub)
         mp.observe_property("sub-text", "string", check_sub)
-        h.notify { message = "Transitions enabled.", osd = self.config.notifications, }
+        show_overlay('>> transitions on')
     else
         mp.unobserve_property(check_sub)
         reset_transition()
-        h.notify { message = "Transitions disabled.", osd = self.config.notifications, }
+        hide_overlay()
     end
 end
 
@@ -148,10 +165,6 @@ end
 local function toggle_skip_immediately()
     self.config.skip_immediately = not self.config.skip_immediately
     toggle_enabled(self.config.skip_immediately)
-    h.notify {
-        message = string.format("Transition skip %s.", (self.config.skip_immediately and "enabled" or "disabled")),
-        osd = self.config.skip_immediately,
-    }
 end
 
 local function init(config)
