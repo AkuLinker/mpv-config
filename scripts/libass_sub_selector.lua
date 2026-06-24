@@ -241,10 +241,7 @@ function compare_subs(a, b)
 end
 
 function tick(copy)
-    if copy == true and events == nil then
-        local text = mp.get_property_native("sub-text")
-        if text and text ~= "" then copy_subs(text) end
-    end
+    if copy == true and events == nil then return end
     if events == nil then return end
     if not mp.get_property_native("sub-visibility") then return mp.set_osd_ass(0, 0, "") end
     if options.paused_only and not mp.get_property_native("core-idle") then return mp.set_osd_ass(width, height, "") end
