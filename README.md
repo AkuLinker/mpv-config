@@ -10,7 +10,6 @@ My mpv configs and scripts.
 - **[thumbfast](https://github.com/po5/thumbfast)** — Adds thumbnail preview support above the progress bar.
 - **[autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)** — Automatically adds videos from the current directory to the playlist.
 - **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Speeds up or skips the video when there are no subtitles. Slightly modified the notification logic in `transitions.lua` to suit my taste.
-- **[libass_sub_selector](https://github.com/po5/libass_sub_selector)** — Allows you to highlight subtitles and copy them like in PotPlayer. The original script is quite outdated — modernized and reworked it a bit, also changed the copy logic from Windows to Linux. You may need to specify the libass path in `script-opts/libass_sub_selector.conf`. Dependencies: `libass`, `ffmpeg`, `mkvtoolnix-cli` (mkvmerge + mkvextract), `wl-clipboard` (wl-copy). Works only with ASS.
 
 ### Custom scripts
 
@@ -33,7 +32,6 @@ A variety of shaders from various sources are also included.
 - **[thumbfast](https://github.com/po5/thumbfast)** — Добавляет поддержку миниатюр над полоской прогресса.
 - **[autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)** — Добавляет в плейлист видео из текущей директории.
 - **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Ускоряет или пропускает куски видео между субтитрами. Слегка изменена логика уведомлений в `transitions.lua`.
-- **[libass_sub_selector](https://github.com/po5/libass_sub_selector)** — Позволяет выделить субтитры и скопировать их как в PotPlayer. Оригинальный скрипт устарел — немного осовременил и переделал, также изменил логику копирования с Windows на Linux. В `script-opts/libass_sub_selector.conf` может потребоваться указать путь к libass. Зависимости: `libass`, `ffmpeg`, `mkvtoolnix-cli` (mkvmerge + mkvextract), `wl-clipboard` (wl-copy). Работает только с ASS.
 
 ### Свои скрипты
 
