@@ -17,6 +17,7 @@ My mpv configs and scripts.
 - **sub-bg-toggle.lua** — Toggles a black background behind subtitles with a single key press.
 - **time.lua** — Shows the estimated time at which the video will finish. Modified and shortened version of [this script](https://github.com/mustaqimM/mpv-scripts/blob/master/time.lua).
 - **seek_display.lua** — Seeks and shows the actual position after the seek completes.
+- **sub-search.lua** — Opens a searchable uosc menu with all subtitle lines and their timecodes. Then you can search and select any line to seek to that moment in the video.
 
 A variety of shaders from various sources are also included.
 
@@ -39,5 +40,6 @@ A variety of shaders from various sources are also included.
 - **sub-bg-toggle.lua** — Переключает чёрный фон за субтитрами одной кнопкой.
 - **time.lua** — Показывает время окончания видео. Изменённая и сокращённая версия [этого скрипта](https://github.com/mustaqimM/mpv-scripts/blob/master/time.lua).
 - **seek_display.lua** — Перемотка с отображением текущей позиции в видео.
+- **sub-search.lua** — Открывает меню uosc со всеми строками субтитров и таймкодами. Позволяет отфильтровать и выбрать любую строку чтобы перемотать видео к этому моменту.
 
 Также используются шейдеры из различных источников.
