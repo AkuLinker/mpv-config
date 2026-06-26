@@ -54,7 +54,9 @@ local function end_transition()
     if mp.get_property_native("video-sync") == "desync" then
         mp.set_property("video-sync", default_sync_property)
     end
-    show_overlay('>> transitions on')
+    if self.enabled then
+        show_overlay('>> transitions on')
+    end
 end
 
 local function reset_transition()
@@ -106,6 +108,7 @@ local function skip_immediately(to_position)
 end
 
 local function check_sub()
+    if not self.enabled then return end
     if should_fast_forward() then
         local current_pos = mp.get_property_number("time-pos", 0)
         local delay_to_next_sub, next_sub_text = get_delay_to_next_sub()
