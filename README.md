@@ -10,6 +10,8 @@ My mpv configs and scripts.
 - **[thumbfast](https://github.com/po5/thumbfast)** — Adds thumbnail preview support above the progress bar.
 - **[autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)** — Automatically adds videos from the current directory to the playlist.
 - **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Speeds up or skips the video when there are no subtitles. Slightly modified the notification logic in `transitions.lua` to suit my taste.
+- **[clipshot.lua](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)** — A convenient script for saving screenshots to the clipboard.
+- **[memo.lua](https://github.com/po5/memo)** — Saves watch history, and displays it in a nice menu.
 
 ### Custom scripts
 
@@ -33,6 +35,8 @@ A variety of shaders from various sources are also included.
 - **[thumbfast](https://github.com/po5/thumbfast)** — Добавляет поддержку миниатюр над полоской прогресса.
 - **[autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)** — Добавляет в плейлист видео из текущей директории.
 - **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Ускоряет или пропускает куски видео между субтитрами. Слегка изменена логика уведомлений в `transitions.lua`.
+- **[clipshot.lua](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)** — Просто удобный скрипт для охранения скриншотов в клипборд.
+- **[memo.lua](https://github.com/po5/memo)** — Сохраняет историю просмотренных видео и отображает это в красивом меню.
 
 ### Свои скрипты
 
