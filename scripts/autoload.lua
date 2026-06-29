@@ -35,6 +35,7 @@ ignore_patterns=^~,^bak-,%.bak$
 local MAX_ENTRIES = 5000
 local MAX_DIR_STACK = 20
 
+local mp    = require "mp"
 local msg = require 'mp.msg'
 local options = require 'mp.options'
 local utils = require 'mp.utils'
