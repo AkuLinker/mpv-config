@@ -20,6 +20,7 @@ My mpv configs and scripts.
 - **seek_display.lua** — Seeks and shows the actual position after the seek completes.
 - **sub-search.lua** — Opens a searchable uosc menu with all subtitle lines and their timecodes. Then you can search and select any line to seek to that moment in the video.
 - **cache_cleaner.lua** — Automatically deletes stale cache files (watch_later and shaders_cache) on player shutdown. When verbose logging is enabled, each session writes its own log file to cache/cache_cleaner_logs/. Old log files are also cleaned up automatically.
+- **copy-video-info.lua** — Opens a uosc menu that lets you copy various pieces of information about the currently playing file to the system clipboard (video title, current subtitle, file path, timestamp, media info).
 
 A variety of shaders from various sources are also included.
 
@@ -45,5 +46,6 @@ A variety of shaders from various sources are also included.
 - **seek_display.lua** — Перемотка с отображением текущей позиции в видео.
 - **sub-search.lua** — Открывает меню uosc со всеми строками субтитров и таймкодами. Позволяет отфильтровать и выбрать любую строку чтобы перемотать видео к этому моменту.
 - **cache_cleaner.lua** — Автоматически удаляет устаревшие файлы кэша (watch_later и shaders_cache) при завершении плеера. При включённом подробном логировании каждая сессия пишет отдельный лог-файл в cache/cache_cleaner_logs/. Старые логи также удаляются автоматически.
+- **copy-video-info.lua** — Открывает uosc меню позволяющее копировать в клипборд различную информацию из воспроизводимого видео (название, текущий субтитр, путь к файлу, текущий тамймстамп и медиа данные).
 
 Также используются шейдеры из различных источников.
