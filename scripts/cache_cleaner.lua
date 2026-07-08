@@ -88,15 +88,6 @@ local function log(fmt, ...)
     end
 end
 
--- Write only to mpv log regardless of verbose setting.
-local function log_always(fmt, ...)
-    local line = fmt:format(...)
-    msg.info(line)
-    if options.verbose and open_log_file() then
-        write_to_log(line)
-    end
-end
-
 -- Write only when verbose=yes.
 local function dbg(fmt, ...)
     if not options.verbose then return end
@@ -131,8 +122,11 @@ local function should_run()
         f:close()
         local hours_passed = (os.time() - ts) / 3600
         if hours_passed < options.check_interval_hours then
-            dbg("cache_cleaner: skipping — only %.1f h passed (threshold: %d h)",
-                hours_passed, options.check_interval_hours)
+            -- Use msg.info directly to avoid open_log_file() being triggered
+            if options.verbose then
+                msg.info(string.format("cache_cleaner: skipping — only %.1f h passed (threshold: %d h)",
+                    hours_passed, options.check_interval_hours))
+            end
             return false
         end
     end
@@ -218,21 +212,13 @@ end
 --  MAIN — called on player shutdown
 -- ============================================================
 local function run_cleanup()
-    local cleanup_needed = should_run()
+    -- If the interval hasn't passed, only log to mpv (no log file created)
+    if not should_run() then return end
 
-    -- Open the log file first if verbose, so we can log even the "skipping" case
+    -- Open the log file only when cleanup actually runs
     if options.verbose then
         open_log_file()
         log("cache_cleaner: session started — %s", os.date("%Y-%m-%d %H:%M:%S"))
-    end
-
-    if not cleanup_needed then
-        if options.verbose then
-            -- Still rotate old logs even when main cleanup is skipped
-            clean_old_logs()
-            if log_file then log_file:close() end
-        end
-        return
     end
 
     dbg("cache_cleaner: running cleanup")
@@ -244,7 +230,7 @@ local function run_cleanup()
     save_last_run_time()
 
     if total > 0 then
-        log_always("cache_cleaner: deleted %d file(s) total", total)
+        log("cache_cleaner: deleted %d file(s) total", total)
     else
         dbg("cache_cleaner: nothing to delete")
     end
