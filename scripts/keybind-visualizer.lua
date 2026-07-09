@@ -16,6 +16,7 @@
 --     layout=abnt2                                  (key in the JSON "layouts")
 --     layouts_file=keybind-visualizer-layouts.json  (searched in mpv config dir)
 --     show_default_bindings=auto                    (auto|yes|no, see options table)
+--     pause_on_open=yes                             (yes|no, pause video while open)
 --
 -- Activate with:  script-binding keybind-visualizer
 -- Close with ESC, or by pressing the same key again.
@@ -33,6 +34,9 @@ local options = {
 	-- "no":  always hide them (old hardcoded behavior).
 	-- "yes": always show them, even if they're actually disabled.
 	show_default_bindings = "auto",
+	-- pause playback while the overlay is open, unpause on close (only if
+	-- this script is the one that paused it).
+	pause_on_open = true,
 }
 require("mp.options").read_options(options, "keybind-visualizer")
 
@@ -242,6 +246,7 @@ local active = false
 local geom = nil
 local hovered = nil
 local saved_autohide = nil
+local paused_by_us = false -- true if we auto-paused on open, so close() knows to undo it
 local mouse_x, mouse_y = nil, nil
 local button_rect = nil -- clickable layout-switch button { x, y, w, h }
 local BK = {} -- lowercased base key -> sorted list of binding entries
@@ -1019,6 +1024,10 @@ close = function()
 		mp.set_property("cursor-autohide", saved_autohide)
 		saved_autohide = nil
 	end
+	if paused_by_us then
+		mp.set_property_bool("pause", false)
+		paused_by_us = false
+	end
 	if overlay then
 		overlay:remove()
 	end
@@ -1042,6 +1051,10 @@ local function open()
 	end
 	saved_autohide = mp.get_property("cursor-autohide")
 	mp.set_property("cursor-autohide", "no")
+	if options.pause_on_open and not mp.get_property_native("pause") then
+		paused_by_us = true
+		mp.set_property_bool("pause", true)
+	end
 	mp.observe_property("mouse-pos", "native", on_mouse)
 	mp.observe_property("osd-dimensions", "native", on_resize)
 	mp.add_forced_key_binding("ESC", "keybind-visualizer-esc", close)
