@@ -225,9 +225,17 @@ end
 
 -- ─── uosc integration ─────────────────────────────────────────────────────────
 
+local was_paused = false
+
 local function open_search_menu()
     local subs = load_active_subtitles()
     if not subs then return end
+
+    -- Pause playback while the menu is open; remember the original state
+    was_paused = mp.get_property_bool("pause")
+    if not was_paused then
+        mp.set_property_bool("pause", true)
+    end
 
     local items = {}
     for i, sub in ipairs(subs) do
@@ -243,14 +251,31 @@ local function open_search_menu()
         type         = "sub_search",
         title        = string.format("Subtitle search  (%d lines)", #subs),
         search_style = "palette",
+        -- callback receives all menu events including 'close'
+        callback     = { mp.get_script_name(), "sub-search-event" },
         items        = items,
     }))
 end
 
-mp.register_script_message("sub-search-jump", function(time_str)
-    local time = tonumber(time_str)
-    if time then
-        mp.commandv("seek", time, "absolute+exact")
+-- Handles item activation (seek) and menu close events via uosc callback mode
+mp.register_script_message("sub-search-event", function(json)
+    local ok, event = pcall(utils.parse_json, json)
+    if not ok or not event then return end
+
+    if event.type == "activate" then
+        local time = tonumber(tostring(event.value):match("([%d%.]+)$"))
+        if time then
+            mp.commandv("script-message-to", "uosc", "close-menu", "sub_search")
+            mp.commandv("seek", time, "absolute+exact")
+        end
+        if not was_paused then
+            mp.set_property_bool("pause", false)
+        end
+    elseif event.type == "close" then
+        -- Menu was closed without selecting anything — restore playback state
+        if not was_paused then
+            mp.set_property_bool("pause", false)
+        end
     end
 end)
 
