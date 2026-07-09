@@ -12,6 +12,7 @@ My mpv configs and scripts.
 - **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Speeds up or skips the video when there are no subtitles. Slightly modified the notification logic in `transitions.lua` to suit my taste.
 - **[clipshot.lua](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)** — A convenient script for saving screenshots to the clipboard.
 - **[memo.lua](https://github.com/po5/memo)** — Saves watch history, and displays it in a nice menu.
+- **[keybind-visualizer.lua](https://github.com/v-amorim/mpv)** — Interactive on-screen keyboard/mouse overlay for mpv — press or hover any key/button to see what it's bound to, with a real-time layout switcher. I slightly modified the original script. Added the ability to toggle mpv's default bindings on and off, and to view them by pressing a key, not just by hovering with the mouse.
 
 ### Custom scripts
 
@@ -38,6 +39,7 @@ A variety of shaders from various sources are also included.
 - **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Ускоряет или пропускает куски видео между субтитрами. Слегка изменена логика уведомлений в `transitions.lua`.
 - **[clipshot.lua](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)** — Просто удобный скрипт для охранения скриншотов в клипборд.
 - **[memo.lua](https://github.com/po5/memo)** — Сохраняет историю просмотренных видео и отображает это в красивом меню.
+- **[keybind-visualizer.lua](https://github.com/v-amorim/mpv)** — Интерактивная оверлей-визуализация клавиатуры и мыши для mpv — наводишь курсор или нажимаешь любую клавишу/кнопку и сразу видишь, что на неё забиндчено. Я слегка поменял оригинальный скрипт. Добавлена возможность включения и выключения дефолтных байдингов mpv и просмотр при их нажимании а не только наведения мышкой.
 
 ### Свои скрипты
 
