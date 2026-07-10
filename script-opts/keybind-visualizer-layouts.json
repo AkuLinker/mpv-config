@@ -154,7 +154,7 @@
         {
           "y": 3.2,
           "keys": [
-            { "id": "CapsLock", "label": "CAPS", "mpv": "CAPS", "w": 1.75 },
+            { "id": "CapsLock", "label": "CAPS", "w": 1.75 },
             { "id": "KeyA", "label": "A", "mpv": "a" },
             { "id": "KeyS", "label": "S", "mpv": "s" },
             { "id": "KeyD", "label": "D", "mpv": "d" },
@@ -245,7 +245,7 @@
         {
           "y": 3.2,
           "keys": [
-            { "id": "CapsLock", "label": "CAPS", "mpv": "CAPS", "w": 1.75 },
+            { "id": "CapsLock", "label": "CAPS", "w": 1.75 },
             { "id": "KeyA", "label": "A", "mpv": "a" },
             { "id": "KeyS", "label": "S", "mpv": "s" },
             { "id": "KeyD", "label": "D", "mpv": "d" },
@@ -337,7 +337,7 @@
         {
           "y": 3.2,
           "keys": [
-            { "id": "CapsLock", "label": "CAPS", "mpv": "CAPS", "w": 1.75 },
+            { "id": "CapsLock", "label": "CAPS", "w": 1.75 },
             { "id": "KeyA", "label": "A", "mpv": "a" },
             { "id": "KeyS", "label": "S", "mpv": "s" },
             { "id": "KeyD", "label": "D", "mpv": "d" },
@@ -431,7 +431,7 @@
         {
           "y": 3.2,
           "keys": [
-            { "id": "CapsLock", "label": "CAPS", "mpv": "CAPS", "w": 1.75 },
+            { "id": "CapsLock", "label": "CAPS", "w": 1.75 },
             { "id": "KeyA", "label": "A", "mpv": "a" },
             { "id": "KeyS", "label": "S", "mpv": "s" },
             { "id": "KeyD", "label": "D", "mpv": "d" },
