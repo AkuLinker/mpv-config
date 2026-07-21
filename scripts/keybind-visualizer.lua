@@ -421,11 +421,23 @@ end
 local function build_capture_keys()
 	local list, seen = {}, {}
 	local function add(keystr, id)
-		if not seen[keystr] then
-			seen[keystr] = true
+		-- named keys (TAB, SPACE, LEFT, F1, ...) are case-insensitive in mpv,
+		-- so canonicalize the key part (after any modifier prefix) when it's
+		-- longer than one character; single characters keep their case,
+		-- since case is meaningful there (Q means Shift+q, not q).
+		local prefix, tail = keystr:match("^(.-)([^+]+)$")
+		local ckey = keystr
+		if tail and #tail > 1 then
+			ckey = prefix .. tail:upper()
+		end
+		if not seen[ckey] then
+			seen[ckey] = true
 			list[#list + 1] = { key = keystr, id = id }
 		end
 	end
+
+	-- direct: physical keys of the drawn layout, plus every modifier combo
+	-- actually bound on them
 	for _, k in ipairs(KEYS) do
 		if k.mpv and k.mpv:upper() ~= "ESC" then
 			add(k.mpv, k.id)
@@ -437,6 +449,21 @@ local function build_capture_keys()
 			end
 		end
 	end
+
+	-- indirect: any other live "default"-section binding not covered above
+	-- (typically the same physical key bound a second time under a
+	-- different keyboard layout/language, e.g. "." alongside "/" on a
+	-- Russian layout). The drawn layout has no key for these, so just
+	-- grab and silently swallow them -- no attempt to guess which key
+	-- they physically correspond to, and no highlighting.
+	for base_lc, combos in pairs(BK) do
+		if base_lc ~= "esc" then
+			for _, b in ipairs(combos) do
+				add(mods_for_bind(base_lc, b.c, b.s, b.a, b.m), nil)
+			end
+		end
+	end
+
 	return list
 end
 
@@ -913,7 +940,7 @@ on_capture = function(id, event)
 	if event == "up" then
 		return
 	end
-	if id == toggle_key_id then
+	if id and id == toggle_key_id then
 		close()
 		return
 	end
@@ -927,7 +954,7 @@ on_capture = function(id, event)
 			end
 		end
 	end
-	if hovered ~= id then
+	if id and hovered ~= id then
 		hovered = id
 		render()
 	end
