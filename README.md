@@ -11,10 +11,11 @@ My mpv configs and scripts.
 - **[uosc_subtitle_settings.lua](https://github.com/itsmeipg/mpv-config/blob/main/portable_config/scripts/uosc_subtitle_settings.lua)** — uosc menu for adjusting subtitle style and behavior on the fly: font, size, color, outline/shadow color and size, bold/italic, border style, scale, spacing, blur, placement/alignment/margins, ASS override, subtitle blending, timing fix, and delay. Supports named style profiles, color presets, and font presets.
 - **[thumbfast](https://github.com/po5/thumbfast)** — Adds thumbnail preview support above the progress bar.
 - **[autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)** — Automatically adds videos from the current directory to the playlist.
-- **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Speeds up or skips the video when there are no subtitles. Slightly modified the notification logic in `transitions.lua` to suit my taste.
+- **[sub-transition (modified)](https://github.com/Ajatt-Tools/sub-transition)** — Speeds up or skips the video when there are no subtitles. Slightly modified the notification logic in `transitions.lua` to suit my taste.
 - **[clipshot.lua](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)** — A convenient script for saving screenshots to the clipboard.
 - **[memo.lua](https://github.com/po5/memo)** — Saves watch history, and displays it in a nice menu.
-- **[keybind-visualizer.lua](https://github.com/v-amorim/mpv)** — Interactive on-screen keyboard/mouse overlay for mpv — press or hover any key/button to see what it's bound to, with a real-time layout switcher. I slightly modified the original script. Added the ability to toggle mpv's default bindings on and off, and to view them by pressing a key, not just by hovering with the mouse.
+- **[keybind-visualizer.lua (modified)](https://github.com/v-amorim/mpv)** — Interactive on-screen keyboard/mouse overlay for mpv — press or hover any key/button to see what it's bound to, with a real-time layout switcher. I slightly modified the original script. Added the ability to toggle mpv's default bindings on and off, and to view them by pressing a key, not just by hovering with the mouse.
+- **[music-mode.lua (modified)](https://github.com/CogentRedTester/mpv-scripts/blob/master/music-mode.lua)** — Automatically switches to a "music mode" when playing audio files, and restores the original settings when a video file plays next.
 
 ### Custom scripts
 
@@ -41,10 +42,11 @@ A variety of shaders from various sources are also included.
 - **[uosc_subtitle_settings.lua](https://github.com/itsmeipg/mpv-config/blob/main/portable_config/scripts/uosc_subtitle_settings.lua)** — uosc-меню для настройки стиля и поведения субтитров на лету: шрифт, размер, цвет, цвет и размер контура/тени, жирный/курсив, стиль границы, масштаб, интервал, размытие, позиционирование/выравнивание/отступы, переопределение ASS, смешивание субтитров, исправление таймингов и задержка. Поддерживает именованные профили стиля, цветовые пресеты и пресеты шрифтов.
 - **[thumbfast](https://github.com/po5/thumbfast)** — Добавляет поддержку миниатюр над полоской прогресса.
 - **[autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)** — Добавляет в плейлист видео из текущей директории.
-- **[sub-transition](https://github.com/Ajatt-Tools/sub-transition)** — Ускоряет или пропускает куски видео между субтитрами. Слегка изменена логика уведомлений в `transitions.lua`.
+- **[sub-transition (modified)](https://github.com/Ajatt-Tools/sub-transition)** — Ускоряет или пропускает куски видео между субтитрами. Слегка изменена логика уведомлений в `transitions.lua`.
 - **[clipshot.lua](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)** — Просто удобный скрипт для охранения скриншотов в клипборд.
 - **[memo.lua](https://github.com/po5/memo)** — Сохраняет историю просмотренных видео и отображает это в красивом меню.
-- **[keybind-visualizer.lua](https://github.com/v-amorim/mpv)** — Интерактивная оверлей-визуализация клавиатуры и мыши для mpv — наводишь курсор или нажимаешь любую клавишу/кнопку и сразу видишь, что на неё забиндчено. Я слегка поменял оригинальный скрипт. Добавлена возможность включения и выключения дефолтных байдингов mpv и просмотр при их нажимании а не только наведения мышкой.
+- **[keybind-visualizer.lua (modified)](https://github.com/v-amorim/mpv)** — Интерактивная оверлей-визуализация клавиатуры и мыши для mpv — наводишь курсор или нажимаешь любую клавишу/кнопку и сразу видишь, что на неё забиндчено. Я слегка поменял оригинальный скрипт. Добавлена возможность включения и выключения дефолтных байдингов mpv и просмотр при их нажимании а не только наведения мышкой.
+- **[music-mode.lua (modified)](https://github.com/CogentRedTester/mpv-scripts/blob/master/music-mode.lua)** — Автоматически переключается в "музыкальный режим" при проигрывании аудио и возвращает исходные настройки, когда дальше идёт видео.
 
 ### Свои скрипты
 
