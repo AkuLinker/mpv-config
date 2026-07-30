@@ -26,6 +26,7 @@ My mpv configs and scripts.
 - **cache_cleaner.lua** — Automatically deletes stale cache files (watch_later and shaders_cache) on player shutdown. When verbose logging is enabled, each session writes its own log file to cache/cache_cleaner_logs/. Old log files are also cleaned up automatically.
 - **copy-video-info.lua** — Opens a uosc menu that lets you copy various pieces of information about the currently playing file to the system clipboard (video title, current subtitle, file path, timestamp, media info).
 - **toggle-bw.lua** — Toggles black and white mode and shows the message about it.
+- **return_from_seek.lua** — Remembers the position you seeked away from, if the seek distance was bigger than a configured threshold. Pressing the bound key jumps back to that position. The remembered position expires after a configured amount of time.
 
 A variety of shaders from various sources are also included.
 
@@ -57,5 +58,6 @@ A variety of shaders from various sources are also included.
 - **cache_cleaner.lua** — Автоматически удаляет устаревшие файлы кэша (watch_later и shaders_cache) при завершении плеера. При включённом подробном логировании каждая сессия пишет отдельный лог-файл в cache/cache_cleaner_logs/. Старые логи также удаляются автоматически.
 - **copy-video-info.lua** — Открывает uosc меню позволяющее копировать в клипборд различную информацию из воспроизводимого видео (название, текущий субтитр, путь к файлу, текущий тамймстамп и медиа данные).
 - **toggle-bw.lua** — Переключает чёрно-белый режим и показывает уведомление об этом.
+- **return_from_seek.lua** — Запоминает место в видео, с которого была сделана перемотка, если дистанция перемотки превысила заданный в конфиге порог. Нажатие забинженной кнопки возвращает плеер на эту позицию. Запомненная позиция «протухает» по истечении заданного в конфиге времени.
 
 Также используются шейдеры из различных источников.
