@@ -1,10 +1,14 @@
 -- cache_cleaner.lua
--- Deletes old files from cache/watch_later and cache/shaders_cache on player shutdown.
+-- Deletes old files from configured cache folders on player shutdown.
 -- Runs at most once per day (configurable). Uses only native mpv Lua APIs —
 -- no external processes, so mpv shutdown is not delayed.
 --
--- When verbose=yes, also writes a per-session log file to cache/cache_cleaner_logs/
+-- When verbose=yes, also writes a per-session log file to the log_dir folder
 -- and auto-deletes old log files from that folder.
+--
+-- Folders to clean are defined in the "dirs" option as a semicolon-separated
+-- list of "path:days" pairs, e.g.:
+--   dirs=cache/watch_later:90;cache/shaders_cache:30;cache/other:14
 
 local mp    = require "mp"
 local utils = require("mp.utils")
@@ -15,16 +19,13 @@ local msg   = require("mp.msg")
 --  OPTIONS  (override in script-opts/cache_cleaner.conf)
 -- ============================================================
 local options = {
-    -- Maximum age in days before a file is deleted (0 = disabled for that folder)
-    watch_later_days   = 90,
-    shaders_cache_days = 30,
+    -- Semicolon-separated list of "path:days" pairs (path relative to mpv config dir).
+    -- Files older than "days" days will be deleted. days=0 disables that folder.
+    -- Example: cache/watch_later:90;cache/shaders_cache:30
+    dirs = "cache/watch_later:90;cache/shaders_cache:30",
 
     -- Minimum interval between cleanup runs, in hours
     check_interval_hours = 24,
-
-    -- Paths relative to the mpv config directory (~~/)
-    watch_later_dir   = "cache/watch_later",
-    shaders_cache_dir = "cache/shaders_cache",
 
     -- Marker file that stores the Unix timestamp of the last run
     last_run_file = "cache/cache_cleaner_last_run",
@@ -41,6 +42,26 @@ local options = {
 }
 
 opts.read_options(options, "cache_cleaner")
+
+-- ============================================================
+--  PARSE DIRS OPTION
+-- ============================================================
+-- Returns a list of {path, days} tables from the "dirs" string.
+local function parse_dirs(dirs_str)
+    local result = {}
+    for entry in (dirs_str .. ";"):gmatch("([^;]+);") do
+        local path, days = entry:match("^(.+):(%d+)$")
+        if path and days then
+            result[#result + 1] = {
+                path = path,
+                days = tonumber(days),
+            }
+        else
+            msg.warn("cache_cleaner: invalid dirs entry, expected 'path:days' — got: " .. entry)
+        end
+    end
+    return result
+end
 
 -- ============================================================
 --  SESSION LOG
@@ -147,16 +168,16 @@ end
 -- ============================================================
 --  CLEANUP  — pure Lua, no external processes
 -- ============================================================
-local function clean_dir(dir_path, max_days, label)
+local function clean_dir(dir_path, max_days)
     if max_days <= 0 then
-        dbg("cache_cleaner: skipping %s (max_days=0)", label)
+        dbg("cache_cleaner: skipping '%s' (days=0)", dir_path)
         return 0
     end
 
     local cutoff = os.time() - max_days * 86400
     local entries = utils.readdir(dir_path, "files")
     if not entries then
-        dbg("cache_cleaner: %s — folder does not exist or is empty", label)
+        dbg("cache_cleaner: '%s' — folder does not exist or is empty", dir_path)
         return 0
     end
 
@@ -169,7 +190,7 @@ local function clean_dir(dir_path, max_days, label)
             local ok, err = os.remove(full)
             if ok then
                 deleted = deleted + 1
-                dbg("cache_cleaner: deleted [%s] %s", label, name)
+                dbg("cache_cleaner: deleted '%s'", name)
             else
                 msg.warn("cache_cleaner: failed to delete '%s': %s", full, tostring(err))
             end
@@ -221,11 +242,19 @@ local function run_cleanup()
         log("cache_cleaner: session started — %s", os.date("%Y-%m-%d %H:%M:%S"))
     end
 
-    dbg("cache_cleaner: running cleanup")
-    local total = 0
+    local folders = parse_dirs(options.dirs)
+    if #folders == 0 then
+        dbg("cache_cleaner: no folders configured, nothing to do")
+        if log_file then log_file:close() end
+        return
+    end
 
-    total = total + clean_dir(cfg(options.watch_later_dir),   options.watch_later_days,   "watch_later")
-    total = total + clean_dir(cfg(options.shaders_cache_dir), options.shaders_cache_days,  "shaders_cache")
+    local total = 0
+    for _, entry in ipairs(folders) do
+        local abs_path = cfg(entry.path)
+        dbg("cache_cleaner: checking '%s' (max %d days)", entry.path, entry.days)
+        total = total + clean_dir(abs_path, entry.days)
+    end
 
     save_last_run_time()
 
