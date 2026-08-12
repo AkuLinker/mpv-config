@@ -28,6 +28,7 @@ My mpv configs and scripts.
 - **toggle-bw.lua** — Toggles black and white mode and shows the message about it.
 - **return_from_seek.lua** — Remembers the position you seeked away from, if the seek distance was bigger than a configured threshold. Pressing the bound key jumps back to that position. The remembered position expires after a configured amount of time.
 - **keyboard_thumbfast.lua** — Lets scrub the mpv timeline with the keyboard (instead of the mouse) while still seeing uosc/thumbfast's thumbnail preview, then confirm or cancel the jump with Enter/Esc.
+- **anime-skip.lua** — Skips anime openings and endings. Parses the title and episode from the filename, looks up the anime via Shikimori, resolves the title's MAL id, and queries api.aniskip.com for the timestamps. Caches the info per episode. Partially based on the code and idea from [this script](https://github.com/synacktraa/ani-skip).
 
 A variety of shaders from various sources are also included.
 
@@ -61,5 +62,6 @@ A variety of shaders from various sources are also included.
 - **toggle-bw.lua** — Переключает чёрно-белый режим и показывает уведомление об этом.
 - **return_from_seek.lua** — Запоминает место в видео, с которого была сделана перемотка, если дистанция перемотки превысила заданный в конфиге порог. Нажатие забинженной кнопки возвращает плеер на эту позицию. Запомненная позиция «протухает» по истечении заданного в конфиге времени.
 - **keyboard_thumbfast.lua** — Позволяет мотать таймлайн mpv с клавиатуры (вместо мыши), при этом видя превью-картинку от uosc/thumbfast, и подтверждать или отменять прыжок клавишами Enter/Esc.
+- **anime-skip.lua** — Пропускает опенинги и ендинги в аниме. Сначала парсит навзание и эпизод, ищет аниме через shikimori, находит mal id тайтла и обращается к api.aniskip.com за таймкодами. Кеширует информацию для эпизода. Частично код и идея взяты у [этого скрипта](https://github.com/synacktraa/ani-skip).
 
 Также используются шейдеры из различных источников.
