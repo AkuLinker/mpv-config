@@ -9,11 +9,20 @@ READ BEFORE USE:
      a binding yourself in your input.conf, for example:
 
          F skript-binding anime-skip      -- (example, pick any key)
+         F script-binding anime-skip
+
+     (script-binding name is "anime-skip", matching this file's name)
 
   2. Dependencies that must be installed and available in PATH:
-       - curl    (all HTTP requests go through it, mpv Lua has no networking)
-       - mkdir   (POSIX "mkdir -p" is used to create the cache directory;
-                  this assumes a Linux/macOS environment)
+       - curl       (all HTTP requests go through it, mpv Lua has no networking)
+       - mkdir      (POSIX "mkdir -p" is used to create the cache directory;
+                     this assumes a Linux/macOS environment)
+       - python3    (used to run the anitopy filename-parsing wrapper)
+       - anitopy    (pip package; https://github.com/igorcafe/anitopy or
+                     https://github.com/kaonashi-2/anitopy)
+     Also requires the "lookup.py" wrapper script (thin CLI wrapper that
+     calls anitopy.parse() and prints the result as JSON) to be present at
+     ANITOPY_LOOKUP_PATH below (default: "<mpv config dir>/scripts/anitopy/lookup.py").
 
   3. Cache location: "<mpv config dir>/cache/anime-skip_cache"
      (usually ~/.config/mpv/cache/anime-skip_cache). One small JSON file is
@@ -21,17 +30,20 @@ READ BEFORE USE:
      never repeat the network lookups.
 
   HOW IT WORKS (on keypress):
-    1. Parse the current filename to guess the anime title and episode
-       number (heuristic, see parse_filename below).
-    2. Search Shikimori for the title, take the best match.
+    1. Parse the current filename via anitopy (through lookup.py) to get
+       the anime title, season (if present) and episode number.
+    2. Search Shikimori for the title (+ season, if present), take the
+       best match.
     3. Resolve the matching MyAnimeList ID via Shikimori's external_links.
     4. Query the AniSkip API (api.aniskip.com) for op/ed timestamps.
     5. If the current playback position falls inside an op/ed interval,
        seek to the end of it. Otherwise show a message and do nothing.
 
   KNOWN LIMITATIONS:
-    - Filename parsing is heuristic; unusual naming schemes may fail.
+    - Filename parsing quality depends on anitopy; very unusual naming
+      schemes may still fail.
     - Relies on Shikimori's search returning the correct title as result #1.
+    - All OSD messages are in English, as requested.
 ================================================================================
 ]]
 
@@ -49,6 +61,11 @@ local ANISKIP_API_URL = "https://api.aniskip.com/v2/skip-times"
 -- User-Agent (their own docs/wrappers all set one explicitly); a generic
 -- one is more likely to get blocked by their anti-bot protection.
 local USER_AGENT = "anime-skip.lua/1.0 (mpv script; https://github.com/synacktraa/ani-skip)"
+
+-- anitopy filename-parsing wrapper (see header comment for setup)
+local PYTHON_CMD = "python3" -- change to "python" if that's what your system provides
+local ANITOPY_LOOKUP_PATH = utils.join_path(
+    mp.command_native({"expand-path", "~~/"}), "scripts/anitopy/lookup.py")
 
 -- cache dir: "<mpv config dir>/cache/anime-skip_cache"
 local function get_cache_dir()
@@ -83,7 +100,7 @@ end
 mp.register_event("start-file", reset_state)
 
 ----------------------------------------------------------------------
--- OSD helper
+-- OSD helper (English only, per request)
 ----------------------------------------------------------------------
 
 local function osd(text, duration)
@@ -198,73 +215,63 @@ local function save_cache(filename, data)
 end
 
 ----------------------------------------------------------------------
--- Filename parsing
+-- Filename parsing (delegated to anitopy via lookup.py)
 --
--- Strategy:
---   - Collect the contents of every [...] and (...) block separately.
---   - The leftover plain text (with brackets/parens removed) is treated
---     as "title (+ possibly season marker) + episode", since release-group
---     tags and technical info almost always live inside brackets/parens.
---   - Episode number resolution, in priority order:
---       1. A trailing "- NN" at the very end of the plain text
---          (e.g. "Youjo Senki S2 - 04").
---       2. A purely-numeric bracket/paren block of 1-4 digits
---          (e.g. "[388]" in "Naruto Shippuuden [388] [NIKITOS]").
---          The LAST such block found is used (closer to typical placement).
---   - This intentionally does NOT strip anything from the plain text
---     (season markers like "S2" are kept, since Shikimori's fuzzy search
---     handles them fine and stripping them was found to be unnecessary).
+-- Calls "python3 lookup.py <filename>", which internally runs
+-- anitopy.parse() and prints the result as JSON. Anitopy reliably
+-- separates release-group tags, technical info (resolution, checksum,
+-- codec) and the episode number from the actual title, which is far
+-- more robust than a hand-rolled regex parser.
+--
+-- Returns: search_title (title + " S<season>" if a season was detected,
+-- used for the Shikimori query), display_title (title only, for OSD/cache),
+-- episode (number or nil).
 ----------------------------------------------------------------------
 
-local function strip_extension(name)
-    return name:gsub("%.%w+$", "")
-end
-
-local function extract_blocks(name)
-    local blocks = {}
-    for content in name:gmatch("%[(.-)%]") do
-        table.insert(blocks, content)
-    end
-    for content in name:gmatch("%((.-)%)") do
-        table.insert(blocks, content)
-    end
-    local plain = name:gsub("%b[]", ""):gsub("%b()", "")
-    plain = plain:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
-    return blocks, plain
-end
-
-local function episode_from_blocks(blocks)
-    local found = nil
-    for _, b in ipairs(blocks) do
-        local trimmed = b:gsub("^%s+", ""):gsub("%s+$", "")
-        -- purely numeric, 1-4 digits: plausible episode number.
-        -- (this naturally excludes hex hashes like "6F9D19E3" and
-        --  resolutions/years which are either non-numeric or too long)
-        if trimmed:match("^%d+$") and #trimmed <= 4 then
-            found = tonumber(trimmed) -- keep the last match
-        end
-    end
-    return found
-end
-
 local function parse_filename(filename)
-    local name = strip_extension(filename)
-    local blocks, plain = extract_blocks(name)
+    local res = mp.command_native({
+        name = "subprocess",
+        capture_stdout = true,
+        capture_stderr = true,
+        args = {PYTHON_CMD, ANITOPY_LOOKUP_PATH, filename},
+    })
 
-    local title, episode
-    local pre, ep = plain:match("^(.-)%s*%-%s*(%d+)%s*$")
-    if pre and ep and pre ~= "" then
-        title = pre
-        episode = tonumber(ep)
-    else
-        title = plain
-        episode = episode_from_blocks(blocks)
+    if res == nil or res.status ~= 0 then
+        msg.error("anime-skip: anitopy lookup failed"
+            .. (res and res.stderr and (": " .. res.stderr) or ""))
+        return nil, nil, nil
+    end
+    if not res.stdout or res.stdout == "" then
+        msg.error("anime-skip: anitopy lookup returned empty output")
+        return nil, nil, nil
     end
 
-    title = title:gsub("^%s+", ""):gsub("%s+$", "")
-    if title == "" then title = nil end
+    local ok, info = pcall(utils.parse_json, res.stdout)
+    if not ok or type(info) ~= "table" then
+        msg.error("anime-skip: failed to parse anitopy JSON output")
+        return nil, nil, nil
+    end
 
-    return title, episode
+    local title = info.anime_title
+    if not title or title == "" then
+        return nil, nil, nil
+    end
+
+    -- anitopy may return a list for batch releases (e.g. "01-02");
+    -- just take the first episode in that case.
+    local episode = info.episode_number
+    if type(episode) == "table" then episode = episode[1] end
+    episode = episode and tonumber(episode) or nil
+
+    local season = info.anime_season
+    if type(season) == "table" then season = season[1] end
+
+    local search_title = title
+    if season and tostring(season) ~= "" then
+        search_title = title .. " S" .. tostring(season)
+    end
+
+    return search_title, title, episode
 end
 
 ----------------------------------------------------------------------
@@ -358,24 +365,24 @@ local function resolve_current_anime()
         return state.found
     end
 
-    local title, episode = parse_filename(filename)
-    state.title_guess, state.episode = title, episode
+    local search_title, display_title, episode = parse_filename(filename)
+    state.title_guess, state.episode = display_title, episode
 
-    if not title or not episode then
-        fail(filename, title, episode,
+    if not search_title or not episode then
+        fail(filename, display_title, episode,
             "Could not determine anime title or episode from filename")
         return false
     end
 
-    local anime, search_err = shikimori_search(title)
+    local anime, search_err = shikimori_search(search_title)
     if not anime then
-        fail(filename, title, episode, "Anime not found: " .. tostring(search_err))
+        fail(filename, display_title, episode, "Anime not found: " .. tostring(search_err))
         return false
     end
 
     local mal_id, mal_err = shikimori_mal_id(anime.id)
     if not mal_id then
-        fail(filename, title, episode,
+        fail(filename, display_title, episode,
             "Anime not found: could not resolve MyAnimeList ID (" .. tostring(mal_err) .. ")")
         return false
     end
@@ -383,7 +390,7 @@ local function resolve_current_anime()
     local episode_length = mp.get_property_number("duration")
     local skip_times, skip_err = fetch_skip_times(mal_id, episode, episode_length)
     if not skip_times then
-        fail(filename, title, episode,
+        fail(filename, display_title, episode,
             "Anime not found: " .. tostring(skip_err), {mal_id = mal_id})
         return false
     end
@@ -395,12 +402,12 @@ local function resolve_current_anime()
     state.ed_start, state.ed_end = skip_times.ed_start, skip_times.ed_end
 
     save_cache(filename, {
-        found = true, title_guess = title, episode = episode, mal_id = mal_id,
+        found = true, title_guess = display_title, episode = episode, mal_id = mal_id,
         op_start = state.op_start, op_end = state.op_end,
         ed_start = state.ed_start, ed_end = state.ed_end,
     })
 
-    osd("Identified: " .. title .. ", episode " .. tostring(episode), 3)
+    osd("Identified: " .. display_title .. ", episode " .. tostring(episode), 3)
     return true
 end
 
