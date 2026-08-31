@@ -65,7 +65,7 @@ local USER_AGENT = "anime-skip.lua/1.0 (mpv script; https://github.com/synacktra
 -- anitopy filename-parsing wrapper (see header comment for setup)
 local PYTHON_CMD = "python3" -- change to "python" if that's what your system provides
 local ANITOPY_LOOKUP_PATH = utils.join_path(
-    mp.command_native({"expand-path", "~~/"}), "scripts/anitopy/lookup.py")
+    mp.command_native({"expand-path", "~~/"}), "scripts/anime-skip/lookup.py")
 
 -- cache dir: "<mpv config dir>/cache/anime-skip_cache"
 local function get_cache_dir()
