@@ -16,6 +16,7 @@ My mpv configs and scripts.
 - **[memo.lua](https://github.com/po5/memo)** — Saves watch history, and displays it in a nice menu.
 - **[keybind-visualizer.lua (modified)](https://github.com/v-amorim/mpv)** — Interactive on-screen keyboard/mouse overlay for mpv — press or hover any key/button to see what it's bound to, with a real-time layout switcher. I slightly modified the original script. Added the ability to toggle mpv's default bindings on and off, and to view them by pressing a key, not just by hovering with the mouse.
 - **[music-mode.lua (modified)](https://github.com/CogentRedTester/mpv-scripts/blob/master/music-mode.lua)** — Automatically switches to a "music mode" when playing audio files, and restores the original settings when a video file plays next.
+- **[autoload.lua](https://github.com/zc62/mpv-scripts/blob/master/autoloop.lua)** — Automatically set loop-file=inf for duration less given length.
 
 ### Custom scripts
 
@@ -50,6 +51,7 @@ A variety of shaders from various sources are also included.
 - **[memo.lua](https://github.com/po5/memo)** — Сохраняет историю просмотренных видео и отображает это в красивом меню.
 - **[keybind-visualizer.lua (modified)](https://github.com/v-amorim/mpv)** — Интерактивная оверлей-визуализация клавиатуры и мыши для mpv — наводишь курсор или нажимаешь любую клавишу/кнопку и сразу видишь, что на неё забиндчено. Я слегка поменял оригинальный скрипт. Добавлена возможность включения и выключения дефолтных байдингов mpv и просмотр при их нажимании а не только наведения мышкой.
 - **[music-mode.lua (modified)](https://github.com/CogentRedTester/mpv-scripts/blob/master/music-mode.lua)** — Автоматически переключается в "музыкальный режим" при проигрывании аудио и возвращает исходные настройки, когда дальше идёт видео.
+- **[autoload.lua](https://github.com/zc62/mpv-scripts/blob/master/autoloop.lua)** — Автоматически устанавливает loop-file=inf для видео короче заданной длительности.
 
 ### Свои скрипты
 
