@@ -22,7 +22,7 @@ READ BEFORE USE:
                      https://github.com/kaonashi-2/anitopy)
      Also requires the "lookup.py" wrapper script (thin CLI wrapper that
      calls anitopy.parse() and prints the result as JSON) to be present at
-     ANITOPY_LOOKUP_PATH below (default: "<mpv config dir>/scripts/anitopy/lookup.py").
+     ANITOPY_LOOKUP_PATH below (default: "<mpv config dir>/scripts/anime-skip/lookup.py").
 
   3. Cache location: "<mpv config dir>/cache/anime-skip_cache"
      (usually ~/.config/mpv/cache/anime-skip_cache). One small JSON file is
@@ -83,8 +83,10 @@ local state = {
     resolved = false,   -- true once resolution was attempted for this file
     found = false,       -- true if title/episode/skip-times were resolved ok
     title_guess = nil,
+    season = nil,
     episode = nil,
     mal_id = nil,
+    err_kind = nil,      -- reason code for the last failure (nil if found)
     op_start = nil, op_end = nil,
     ed_start = nil, ed_end = nil,
 }
@@ -92,7 +94,7 @@ local state = {
 local function reset_state()
     state = {
         resolved = false, found = false,
-        title_guess = nil, episode = nil, mal_id = nil,
+        title_guess = nil, season = nil, episode = nil, mal_id = nil, err_kind = nil,
         op_start = nil, op_end = nil, ed_start = nil, ed_end = nil,
     }
 end
@@ -104,8 +106,51 @@ mp.register_event("start-file", reset_state)
 ----------------------------------------------------------------------
 
 local function osd(text, duration)
-    mp.osd_message("[anime-skip] " .. text, duration or 3)
+    mp.osd_message("[anime-skip]\n" .. text, duration or 3)
     msg.info(text)
+end
+
+----------------------------------------------------------------------
+-- Diagnostic messages for failures
+--
+-- Every failure is tagged with a short "kind" string (see call sites
+-- below). The actual wording lives here in one place, and the OSD
+-- shown to the user is built as:
+--   Name: <title>
+--   Season: <n>  Episode: <n>   (only the parts we actually have)
+--   <reason, from the table below>
+-- If we don't even have a title (anitopy itself failed), only the
+-- reason is shown.
+----------------------------------------------------------------------
+
+local ERROR_MESSAGES = {
+    anitopy_failed = "anitopy failed to parse this filename",
+    shikimori_unavailable = "Shikimori is unavailable",
+    shikimori_not_found = "Shikimori found no match for this title",
+    shikimori_no_mal_link = "Shikimori entry has no linked MyAnimeList ID",
+    aniskip_unavailable = "AniSkip is unavailable",
+    aniskip_no_data = "AniSkip has no data for this episode",
+}
+
+local function format_diagnostic(title, season, episode, mal_id, err_kind)
+    local reason = ERROR_MESSAGES[err_kind] or tostring(err_kind or "unknown error")
+    if not title then
+        return reason
+    end
+
+    local lines = {"Name: " .. title}
+    local info_parts = {}
+    if season then table.insert(info_parts, "Season: " .. tostring(season)) end
+    if episode then table.insert(info_parts, "Episode: " .. tostring(episode)) end
+    if #info_parts > 0 then
+        table.insert(lines, table.concat(info_parts, "  "))
+    end
+    table.insert(lines, reason)
+    if mal_id then
+        table.insert(lines, "MAL ID: " .. tostring(mal_id))
+    end
+
+    return table.concat(lines, "\n")
 end
 
 ----------------------------------------------------------------------
@@ -136,7 +181,7 @@ local function http_get_json(url)
         capture_stdout = true,
         capture_stderr = true,
         args = {
-            "curl", "-s", "-L", "-A", USER_AGENT,
+            "curl", "-s", "-L", "-g", "-A", USER_AGENT,
             "-H", "Accept: application/json",
             "--max-time", "10", url,
         },
@@ -225,7 +270,8 @@ end
 --
 -- Returns: search_title (title + " S<season>" if a season was detected,
 -- used for the Shikimori query), display_title (title only, for OSD/cache),
--- episode (number or nil).
+-- season (string or nil), episode (number; defaults to 1 if anitopy found
+-- a title but no episode marker, e.g. movies/OVAs with a single segment).
 ----------------------------------------------------------------------
 
 local function parse_filename(filename)
@@ -239,39 +285,42 @@ local function parse_filename(filename)
     if res == nil or res.status ~= 0 then
         msg.error("anime-skip: anitopy lookup failed"
             .. (res and res.stderr and (": " .. res.stderr) or ""))
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     if not res.stdout or res.stdout == "" then
         msg.error("anime-skip: anitopy lookup returned empty output")
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
 
     local ok, info = pcall(utils.parse_json, res.stdout)
     if not ok or type(info) ~= "table" then
         msg.error("anime-skip: failed to parse anitopy JSON output")
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
 
     local title = info.anime_title
     if not title or title == "" then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
 
     -- anitopy may return a list for batch releases (e.g. "01-02");
-    -- just take the first episode in that case.
+    -- just take the first episode in that case. If no episode marker was
+    -- found at all (typical for movies/single-segment OVAs), default to
+    -- episode 1 rather than treating it as a failure.
     local episode = info.episode_number
     if type(episode) == "table" then episode = episode[1] end
-    episode = episode and tonumber(episode) or nil
+    episode = episode and tonumber(episode) or 1
 
     local season = info.anime_season
     if type(season) == "table" then season = season[1] end
+    season = season and tostring(season) or nil
 
     local search_title = title
-    if season and tostring(season) ~= "" then
-        search_title = title .. " S" .. tostring(season)
+    if season then
+        search_title = title .. " S" .. season
     end
 
-    return search_title, title, episode
+    return search_title, title, season, episode
 end
 
 ----------------------------------------------------------------------
@@ -281,9 +330,9 @@ end
 local function shikimori_search(title)
     local url = SHIKIMORI_ANIMES_URL .. "?search=" .. url_encode(title) .. "&limit=5"
     local data, err = http_get_json(url)
-    if err then return nil, err end
+    if err then return nil, "shikimori_unavailable" end
     if type(data) ~= "table" or #data == 0 then
-        return nil, "no matches on Shikimori"
+        return nil, "shikimori_not_found"
     end
     return data[1], nil -- best (first) match
 end
@@ -291,8 +340,8 @@ end
 local function shikimori_mal_id(shiki_id)
     local url = SHIKIMORI_ANIMES_URL .. "/" .. tostring(shiki_id) .. "/external_links"
     local data, err = http_get_json(url)
-    if err then return nil, err end
-    if type(data) ~= "table" then return nil, "unexpected external_links response" end
+    if err then return nil, "shikimori_unavailable" end
+    if type(data) ~= "table" then return nil, "shikimori_unavailable" end
 
     for _, link in ipairs(data) do
         if link.kind == "myanimelist" and link.url then
@@ -300,7 +349,7 @@ local function shikimori_mal_id(shiki_id)
             if mal_id then return tonumber(mal_id), nil end
         end
     end
-    return nil, "no MyAnimeList link found"
+    return nil, "shikimori_no_mal_link"
 end
 
 local function fetch_skip_times(mal_id, episode, episode_length)
@@ -311,9 +360,9 @@ local function fetch_skip_times(mal_id, episode, episode_length)
     end
 
     local data, err = http_get_json(url)
-    if err then return nil, err end
+    if err then return nil, "aniskip_unavailable" end
     if not data.found then
-        return nil, "AniSkip has no data for this episode"
+        return nil, "aniskip_no_data"
     end
 
     local result = {}
@@ -331,11 +380,16 @@ end
 -- Main resolution flow (cached per source filename)
 ----------------------------------------------------------------------
 
-local function fail(filename, title, episode, message, extra)
-    osd(message, 4)
+local function fail(filename, title, season, episode, mal_id, err_kind, extra)
+    osd(format_diagnostic(title, season, episode, mal_id, err_kind), 5)
     state.resolved = true
     state.found = false
-    local cache_data = {found = false, title_guess = title, episode = episode}
+    state.mal_id = mal_id
+    state.err_kind = err_kind
+    local cache_data = {
+        found = false, title_guess = title, season = season, episode = episode,
+        mal_id = mal_id, err_kind = err_kind,
+    }
     if extra then
         for k, v in pairs(extra) do cache_data[k] = v end
     end
@@ -346,8 +400,10 @@ local function apply_cached(cached)
     state.resolved = true
     state.found = cached.found
     state.title_guess = cached.title_guess
+    state.season = cached.season
     state.episode = cached.episode
     state.mal_id = cached.mal_id
+    state.err_kind = cached.err_kind
     state.op_start, state.op_end = cached.op_start, cached.op_end
     state.ed_start, state.ed_end = cached.ed_start, cached.ed_end
 end
@@ -365,33 +421,30 @@ local function resolve_current_anime()
         return state.found
     end
 
-    local search_title, display_title, episode = parse_filename(filename)
-    state.title_guess, state.episode = display_title, episode
+    local search_title, display_title, season, episode = parse_filename(filename)
+    state.title_guess, state.season, state.episode = display_title, season, episode
 
-    if not search_title or not episode then
-        fail(filename, display_title, episode,
-            "Could not determine anime title or episode from filename")
+    if not search_title then
+        fail(filename, nil, nil, nil, nil, "anitopy_failed")
         return false
     end
 
     local anime, search_err = shikimori_search(search_title)
     if not anime then
-        fail(filename, display_title, episode, "Anime not found: " .. tostring(search_err))
+        fail(filename, display_title, season, episode, nil, search_err)
         return false
     end
 
     local mal_id, mal_err = shikimori_mal_id(anime.id)
     if not mal_id then
-        fail(filename, display_title, episode,
-            "Anime not found: could not resolve MyAnimeList ID (" .. tostring(mal_err) .. ")")
+        fail(filename, display_title, season, episode, nil, mal_err)
         return false
     end
 
     local episode_length = mp.get_property_number("duration")
     local skip_times, skip_err = fetch_skip_times(mal_id, episode, episode_length)
     if not skip_times then
-        fail(filename, display_title, episode,
-            "Anime not found: " .. tostring(skip_err), {mal_id = mal_id})
+        fail(filename, display_title, season, episode, mal_id, skip_err)
         return false
     end
 
@@ -402,7 +455,7 @@ local function resolve_current_anime()
     state.ed_start, state.ed_end = skip_times.ed_start, skip_times.ed_end
 
     save_cache(filename, {
-        found = true, title_guess = display_title, episode = episode, mal_id = mal_id,
+        found = true, title_guess = display_title, season = season, episode = episode, mal_id = mal_id,
         op_start = state.op_start, op_end = state.op_end,
         ed_start = state.ed_start, ed_end = state.ed_end,
     })
@@ -421,7 +474,7 @@ local function do_skip()
             return -- failure message already shown
         end
     elseif not state.found then
-        osd("Anime not found for this file", 3)
+        osd(format_diagnostic(state.title_guess, state.season, state.episode, state.mal_id, state.err_kind), 5)
         return
     end
 
