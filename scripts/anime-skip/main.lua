@@ -17,12 +17,17 @@ READ BEFORE USE:
        - curl       (all HTTP requests go through it, mpv Lua has no networking)
        - mkdir      (POSIX "mkdir -p" is used to create the cache directory;
                      this assumes a Linux/macOS environment)
-       - python3    (used to run the anitopy filename-parsing wrapper)
+       - python3    (used to run the anitopy filename-parsing wrapper and the
+                     fuzzy title-matching helper; both use only the standard
+                     library plus anitopy, no extra pip packages beyond that)
        - anitopy    (pip package; https://github.com/igorcafe/anitopy or
                      https://github.com/kaonashi-2/anitopy)
-     Also requires the "lookup.py" wrapper script (thin CLI wrapper that
-     calls anitopy.parse() and prints the result as JSON) to be present at
-     ANITOPY_LOOKUP_PATH below (default: "<mpv config dir>/scripts/anime-skip/lookup.py").
+     Also requires two small wrapper scripts to be present next to each other:
+       - "lookup.py" (calls anitopy.parse() on the filename, prints JSON)
+       - "match.py"  (scores Shikimori candidates against our title using
+                      difflib.SequenceMatcher, prints the best index + score)
+     Default location for both: "<mpv config dir>/scripts/anime-skip/"
+     (see ANITOPY_LOOKUP_PATH / MATCH_SCRIPT_PATH below).
 
   3. Cache location: "<mpv config dir>/cache/anime-skip_cache"
      (usually ~/.config/mpv/cache/anime-skip_cache). One small JSON file is
@@ -32,17 +37,22 @@ READ BEFORE USE:
   HOW IT WORKS (on keypress):
     1. Parse the current filename via anitopy (through lookup.py) to get
        the anime title, season (if present) and episode number.
-    2. Search Shikimori for the title (+ season, if present), take the
-       best match.
-    3. Resolve the matching MyAnimeList ID via Shikimori's external_links.
-    4. Query the AniSkip API (api.aniskip.com) for op/ed timestamps.
+    2. Query Shikimori's GraphQL API for up to 5 candidates matching the
+       title, each with all of its name variants (name/russian/japanese/
+       english/synonyms) and its MyAnimeList ID (malId) in the same response.
+    3. Fuzzy-match our title against every name variant of every candidate
+       (via match.py) and take the best-scoring one, provided it clears a
+       minimum similarity threshold; below that, treat it as not found.
+    4. Query the AniSkip API (api.aniskip.com) for op/ed timestamps using
+       the MAL ID from step 3.
     5. If the current playback position falls inside an op/ed interval,
        seek to the end of it. Otherwise show a message and do nothing.
 
   KNOWN LIMITATIONS:
     - Filename parsing quality depends on anitopy; very unusual naming
       schemes may still fail.
-    - Relies on Shikimori's search returning the correct title as result #1.
+    - The fuzzy match threshold is a heuristic; very obscure/short titles
+      could still be mismatched or wrongly rejected.
     - All OSD messages are in English, as requested.
 ================================================================================
 ]]
@@ -55,17 +65,24 @@ local msg = require 'mp.msg'
 -- Configuration
 ----------------------------------------------------------------------
 
-local SHIKIMORI_ANIMES_URL = "https://shikimori.io/api/animes"
+local SHIKIMORI_GRAPHQL_URL = "https://shikimori.io/api/graphql"
 local ANISKIP_API_URL = "https://api.aniskip.com/v2/skip-times"
 -- Shikimori asks API clients to identify themselves with a descriptive
 -- User-Agent (their own docs/wrappers all set one explicitly); a generic
 -- one is more likely to get blocked by their anti-bot protection.
 local USER_AGENT = "anime-skip.lua/1.0 (mpv script; https://github.com/synacktraa/ani-skip)"
 
--- anitopy filename-parsing wrapper (see header comment for setup)
+-- Minimum difflib.SequenceMatcher ratio (0-1) for a Shikimori candidate to
+-- be accepted; below this, we report "not found" rather than risk skipping
+-- based on the wrong anime.
+local FUZZY_MATCH_THRESHOLD = 0.6
+
+-- anitopy filename-parsing wrapper and fuzzy-matching helper (see header)
 local PYTHON_CMD = "python3" -- change to "python" if that's what your system provides
-local ANITOPY_LOOKUP_PATH = utils.join_path(
-    mp.command_native({"expand-path", "~~/"}), "scripts/anime-skip/lookup.py")
+local SCRIPTS_DIR = utils.join_path(
+    mp.command_native({"expand-path", "~~/"}), "scripts/anime-skip")
+local ANITOPY_LOOKUP_PATH = utils.join_path(SCRIPTS_DIR, "lookup.py")
+local MATCH_SCRIPT_PATH = utils.join_path(SCRIPTS_DIR, "match.py")
 
 -- cache dir: "<mpv config dir>/cache/anime-skip_cache"
 local function get_cache_dir()
@@ -210,14 +227,6 @@ local function http_get_json(url)
     return data, nil
 end
 
-local function url_encode(str)
-    str = str:gsub("([^%w %-%_%.%~])", function(c)
-        return string.format("%%%02X", string.byte(c))
-    end)
-    str = str:gsub(" ", "+")
-    return str
-end
-
 ----------------------------------------------------------------------
 -- Cache helpers (one JSON file per source filename)
 ----------------------------------------------------------------------
@@ -327,29 +336,124 @@ end
 -- Shikimori + AniSkip resolution
 ----------------------------------------------------------------------
 
-local function shikimori_search(title)
-    local url = SHIKIMORI_ANIMES_URL .. "?search=" .. url_encode(title) .. "&limit=5"
-    local data, err = http_get_json(url)
-    if err then return nil, "shikimori_unavailable" end
-    if type(data) ~= "table" or #data == 0 then
+local SHIKIMORI_GRAPHQL_QUERY = [[
+query($s: String) {
+  animes(search: $s, limit: 5) {
+    malId
+    name
+    russian
+    japanese
+    english
+    synonyms
+  }
+}
+]]
+
+-- Queries Shikimori's GraphQL API for up to 5 candidates. Returns the raw
+-- list of anime objects (each with malId + all name variants), or nil+err.
+local function shikimori_graphql_search(search_title)
+    local body = utils.format_json({query = SHIKIMORI_GRAPHQL_QUERY, variables = {s = search_title}})
+    local res = mp.command_native({
+        name = "subprocess",
+        capture_stdout = true,
+        capture_stderr = true,
+        args = {
+            "curl", "-s", "-g", "-A", USER_AGENT,
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json",
+            "--max-time", "10",
+            "-d", body,
+            SHIKIMORI_GRAPHQL_URL,
+        },
+    })
+
+    if res == nil or res.status ~= 0 then
+        return nil, "shikimori_unavailable"
+    end
+    if not res.stdout or res.stdout == "" then
+        return nil, "shikimori_unavailable"
+    end
+
+    local ok, data = pcall(utils.parse_json, res.stdout)
+    if not ok or type(data) ~= "table" then
+        local path = dump_debug_response("shikimori_graphql", res.stdout)
+        msg.error("anime-skip: non-JSON Shikimori GraphQL response, saved to " .. path)
+        return nil, "shikimori_unavailable"
+    end
+    if data.errors then
+        msg.error("anime-skip: Shikimori GraphQL error: "
+            .. (data.errors[1] and data.errors[1].message or "unknown"))
+        return nil, "shikimori_unavailable"
+    end
+    if not data.data or not data.data.animes or #data.data.animes == 0 then
         return nil, "shikimori_not_found"
     end
-    return data[1], nil -- best (first) match
+
+    return data.data.animes, nil
 end
 
-local function shikimori_mal_id(shiki_id)
-    local url = SHIKIMORI_ANIMES_URL .. "/" .. tostring(shiki_id) .. "/external_links"
-    local data, err = http_get_json(url)
-    if err then return nil, "shikimori_unavailable" end
-    if type(data) ~= "table" then return nil, "shikimori_unavailable" end
-
-    for _, link in ipairs(data) do
-        if link.kind == "myanimelist" and link.url then
-            local mal_id = link.url:match("(%d+)%s*$")
-            if mal_id then return tonumber(mal_id), nil end
+-- Scores every candidate's name variants against `title` via match.py
+-- (difflib.SequenceMatcher, run once for the whole batch) and returns the
+-- best-scoring candidate's 1-based index and score.
+local function fuzzy_match_index(title, animes)
+    local candidates = {}
+    for i, a in ipairs(animes) do
+        local fields = {}
+        if a.name then table.insert(fields, a.name) end
+        if a.russian then table.insert(fields, a.russian) end
+        if a.japanese then table.insert(fields, a.japanese) end
+        if a.english then table.insert(fields, a.english) end
+        if type(a.synonyms) == "table" then
+            for _, syn in ipairs(a.synonyms) do table.insert(fields, syn) end
         end
+        table.insert(candidates, {index = i, fields = fields})
     end
-    return nil, "shikimori_no_mal_link"
+
+    local payload = utils.format_json({title = title, candidates = candidates})
+    local res = mp.command_native({
+        name = "subprocess",
+        capture_stdout = true,
+        capture_stderr = true,
+        stdin_data = payload,
+        args = {PYTHON_CMD, MATCH_SCRIPT_PATH},
+    })
+
+    if res == nil or res.status ~= 0 or not res.stdout or res.stdout == "" then
+        msg.error("anime-skip: match.py failed"
+            .. (res and res.stderr and (": " .. res.stderr) or ""))
+        return nil, 0
+    end
+
+    local ok, data = pcall(utils.parse_json, res.stdout)
+    if not ok or type(data) ~= "table" then
+        msg.error("anime-skip: failed to parse match.py output")
+        return nil, 0
+    end
+
+    return data.best_index, data.score or 0
+end
+
+-- Full Shikimori resolution: search candidates, pick the best fuzzy match
+-- (rejecting anything below FUZZY_MATCH_THRESHOLD), return its MAL ID.
+-- Matching is done against search_title (title + season, if any) since
+-- Shikimori's own name/english fields usually bake the season into the
+-- text too (e.g. "Clevatess Season 2") - matching the bare title against
+-- those systematically under-scores due to the length difference.
+local function shikimori_resolve(search_title)
+    local animes, err = shikimori_graphql_search(search_title)
+    if not animes then return nil, err end
+
+    local best_index, score = fuzzy_match_index(search_title, animes)
+    if not best_index or score < FUZZY_MATCH_THRESHOLD then
+        return nil, "shikimori_not_found"
+    end
+
+    local best = animes[best_index]
+    if not best.malId then
+        return nil, "shikimori_no_mal_link"
+    end
+
+    return tonumber(best.malId), nil
 end
 
 local function fetch_skip_times(mal_id, episode, episode_length)
@@ -429,15 +533,9 @@ local function resolve_current_anime()
         return false
     end
 
-    local anime, search_err = shikimori_search(search_title)
-    if not anime then
-        fail(filename, display_title, season, episode, nil, search_err)
-        return false
-    end
-
-    local mal_id, mal_err = shikimori_mal_id(anime.id)
+    local mal_id, resolve_err = shikimori_resolve(search_title)
     if not mal_id then
-        fail(filename, display_title, season, episode, nil, mal_err)
+        fail(filename, display_title, season, episode, nil, resolve_err)
         return false
     end
 
