@@ -6,11 +6,14 @@
       Copy to ~/.config/mpv/scripts/sub-search.lua
 
     Key bindings (add to ~/.config/mpv/input.conf):
-      ctrl+f  script-binding sub-search-open
+      ctrl+f        script-binding sub-search-open
+      ctrl+F        script-binding sub-search-open-secondary
 
     Usage:
-      Press the bound key — a uosc palette opens with all subtitle lines.
-      Type to filter. Click or press Enter on a result to jump to that moment.
+      Press the bound key — a uosc palette opens with all subtitle lines
+      from the current subtitle track (primary or secondary, depending on
+      which binding was used). Type to filter. Click or press Enter on a
+      result to jump to that moment.
       Note: filtering is handled by uosc (fuzzy match on the item title).
 
     Dependencies:
@@ -67,15 +70,18 @@ local function strip_tags(text)
 end
 
 -- ─── In-memory subtitle cache ──────────────────────────────────────────────────
--- Single slot only: holds the parsed subtitle list for the currently loaded
--- file/track. Not a growing table keyed by every file ever opened, so memory
--- use stays flat regardless of how many files are played in one mpv session.
--- Cleared explicitly on "start-file" (see below) so a new file never reuses
+-- Two fixed slots: one for the primary subtitle track, one for the
+-- secondary one. Each holds the parsed subtitle list for whatever file/track
+-- it currently belongs to — not a growing table keyed by every file/track
+-- ever opened, so memory use stays flat regardless of session length.
+-- Separate slots mean searching the secondary track never evicts the
+-- already-parsed primary track from the cache, and vice versa.
+-- Both are cleared on "start-file" (see below) so a new file never reuses
 -- another file's cached lines while the search menu hasn't been reopened yet.
 
 local sub_cache = {
-    key  = nil, -- "<video_path>|<sid>" that the cached subs belong to
-    subs = nil, -- parsed subtitle list, or nil if nothing is cached
+    primary   = { key = nil, subs = nil }, -- key: "<video_path>|<sid>"
+    secondary = { key = nil, subs = nil }, -- key: "<video_path>|<secondary-sid>"
 }
 
 local function make_cache_key(video_path, sid)
@@ -83,8 +89,10 @@ local function make_cache_key(video_path, sid)
 end
 
 local function clear_sub_cache()
-    sub_cache.key = nil
-    sub_cache.subs = nil
+    sub_cache.primary.key    = nil
+    sub_cache.primary.subs   = nil
+    sub_cache.secondary.key  = nil
+    sub_cache.secondary.subs = nil
 end
 
 -- ─── Subtitle parsers ─────────────────────────────────────────────────────────
@@ -186,24 +194,32 @@ local function extract_embedded_subs(video_path, track_id)
     return nil
 end
 
-local function load_active_subtitles()
+local function load_active_subtitles(secondary)
     local video_path = mp.get_property("path")
     if not video_path then
         mp.osd_message("sub-search: no file is open", 3)
         return nil
     end
 
-    local sid = mp.get_property_number("sid")
-    if not sid or sid == 0 then
-        mp.osd_message("sub-search: no subtitle track selected", 3)
+    -- "sid" selects the primary subtitle track, "secondary-sid" the secondary
+    -- one. Both are plain track ids, so the rest of the function treats them
+    -- identically from here on.
+    local target_sid = mp.get_property_number(secondary and "secondary-sid" or "sid")
+    if not target_sid or target_sid == 0 then
+        mp.osd_message(
+            secondary and "sub-search: no secondary subtitle track selected"
+                       or "sub-search: no subtitle track selected",
+            3)
         return nil
     end
 
+    local cache_slot = secondary and sub_cache.secondary or sub_cache.primary
+
     -- Serve from cache if we already parsed this exact file/track combo.
     -- Avoids re-running ffmpeg and re-parsing on every menu open.
-    local cache_key = make_cache_key(video_path, sid)
-    if sub_cache.key == cache_key and sub_cache.subs then
-        return sub_cache.subs
+    local cache_key = make_cache_key(video_path, target_sid)
+    if cache_slot.key == cache_key and cache_slot.subs then
+        return cache_slot.subs
     end
 
     local track_list = mp.get_property_native("track-list") or {}
@@ -212,7 +228,7 @@ local function load_active_subtitles()
 
     for _, track in ipairs(track_list) do
         if track.type == "sub" then
-            if track.selected then
+            if track.id == target_sid then
                 active_track = track
                 break
             end
@@ -253,8 +269,8 @@ local function load_active_subtitles()
     end
 
     -- Cache for subsequent opens of the same file/track.
-    sub_cache.key = cache_key
-    sub_cache.subs = subs
+    cache_slot.key = cache_key
+    cache_slot.subs = subs
 
     return subs
 end
@@ -269,8 +285,8 @@ mp.register_event("start-file", clear_sub_cache)
 
 local was_paused = false
 
-local function open_search_menu()
-    local subs = load_active_subtitles()
+local function open_search_menu(secondary)
+    local subs = load_active_subtitles(secondary)
     if not subs then return end
 
     -- Pause playback while the menu is open; remember the original state.
@@ -293,40 +309,55 @@ local function open_search_menu()
         if i >= config.max_items then break end
     end
 
+    -- Primary and secondary each get their own uosc menu type and callback
+    -- message name, so activating/closing one never targets the other menu.
+    local menu_type   = secondary and "sub_search_secondary" or "sub_search"
+    local menu_title  = secondary and "Secondary subtitle search" or "Subtitle search"
+    local event_name  = secondary and "sub-search-event-secondary" or "sub-search-event"
+
     mp.commandv("script-message-to", "uosc", "open-menu", utils.format_json({
-        type         = "sub_search",
-        title        = string.format("Subtitle search  (%d lines)", #subs),
+        type         = menu_type,
+        title        = string.format("%s  (%d lines)", menu_title, #subs),
         search_style = "palette",
         -- callback receives all menu events including 'close'
-        callback     = { mp.get_script_name(), "sub-search-event" },
+        callback     = { mp.get_script_name(), event_name },
         items        = items,
     }))
 end
 
--- Handles item activation (seek) and menu close events via uosc callback mode
-mp.register_script_message("sub-search-event", function(json)
-    local ok, event = pcall(utils.parse_json, json)
-    if not ok or not event then return end
+-- Handles item activation (seek) and menu close events via uosc callback
+-- mode. Shared logic for both primary and secondary menus; menu_type is
+-- baked in per-instance so closing always targets the right uosc menu.
+local function make_search_event_handler(menu_type)
+    return function(json)
+        local ok, event = pcall(utils.parse_json, json)
+        if not ok or not event then return end
 
-    if event.type == "activate" then
-        local time = tonumber(tostring(event.value):match("([%d%.]+)$"))
-        if time then
-            mp.commandv("script-message-to", "uosc", "close-menu", "sub_search")
-            mp.commandv("seek", time, "absolute+exact")
-        end
-        if config.pause_on_open and not was_paused then
-            mp.set_property_bool("pause", false)
-        end
-    elseif event.type == "close" then
-        -- Menu was closed without selecting anything — restore playback state
-        if config.pause_on_open and not was_paused then
-            mp.set_property_bool("pause", false)
+        if event.type == "activate" then
+            local time = tonumber(tostring(event.value):match("([%d%.]+)$"))
+            if time then
+                mp.commandv("script-message-to", "uosc", "close-menu", menu_type)
+                mp.commandv("seek", time, "absolute+exact")
+            end
+            if config.pause_on_open and not was_paused then
+                mp.set_property_bool("pause", false)
+            end
+        elseif event.type == "close" then
+            -- Menu was closed without selecting anything — restore playback state
+            if config.pause_on_open and not was_paused then
+                mp.set_property_bool("pause", false)
+            end
         end
     end
-end)
+end
+
+mp.register_script_message("sub-search-event", make_search_event_handler("sub_search"))
+mp.register_script_message("sub-search-event-secondary", make_search_event_handler("sub_search_secondary"))
 
 -- ─── Script binding (configure in input.conf) ─────────────────────────────────
 
-mp.add_key_binding(nil, "sub-search-open", open_search_menu)
+mp.add_key_binding(nil, "sub-search-open", function() open_search_menu(false) end)
+mp.add_key_binding(nil, "sub-search-open-secondary", function() open_search_menu(true) end)
 
-mp.msg.info("sub-search loaded. Bind 'script-binding sub-search-open' in input.conf to use.")
+mp.msg.info("sub-search loaded. Bind 'script-binding sub-search-open' (and optionally "
+    .. "'script-binding sub-search-open-secondary') in input.conf to use.")
