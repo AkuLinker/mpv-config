@@ -25,7 +25,11 @@ local utils = require("mp.utils")
 
 local config = {
     -- Maximum number of subtitle lines loaded into the menu
-    max_items = 2000,
+    max_items = 6000,
+    -- Pause playback while the search menu is open, and restore the
+    -- previous play/pause state when it closes. Set to false to leave
+    -- playback running untouched while searching.
+    pause_on_open = true,
 }
 
 -- ─── Utilities ────────────────────────────────────────────────────────────────
@@ -60,6 +64,27 @@ local function strip_tags(text)
     text = text:gsub("<[^>]+>", "")
     text = text:gsub("%s+", " ")
     return text:match("^%s*(.-)%s*$")
+end
+
+-- ─── In-memory subtitle cache ──────────────────────────────────────────────────
+-- Single slot only: holds the parsed subtitle list for the currently loaded
+-- file/track. Not a growing table keyed by every file ever opened, so memory
+-- use stays flat regardless of how many files are played in one mpv session.
+-- Cleared explicitly on "start-file" (see below) so a new file never reuses
+-- another file's cached lines while the search menu hasn't been reopened yet.
+
+local sub_cache = {
+    key  = nil, -- "<video_path>|<sid>" that the cached subs belong to
+    subs = nil, -- parsed subtitle list, or nil if nothing is cached
+}
+
+local function make_cache_key(video_path, sid)
+    return video_path .. "|" .. tostring(sid)
+end
+
+local function clear_sub_cache()
+    sub_cache.key = nil
+    sub_cache.subs = nil
 end
 
 -- ─── Subtitle parsers ─────────────────────────────────────────────────────────
@@ -174,6 +199,13 @@ local function load_active_subtitles()
         return nil
     end
 
+    -- Serve from cache if we already parsed this exact file/track combo.
+    -- Avoids re-running ffmpeg and re-parsing on every menu open.
+    local cache_key = make_cache_key(video_path, sid)
+    if sub_cache.key == cache_key and sub_cache.subs then
+        return sub_cache.subs
+    end
+
     local track_list = mp.get_property_native("track-list") or {}
     local active_track = nil
     local sub_track_index = 0
@@ -220,8 +252,18 @@ local function load_active_subtitles()
         return nil
     end
 
+    -- Cache for subsequent opens of the same file/track.
+    sub_cache.key = cache_key
+    sub_cache.subs = subs
+
     return subs
 end
+
+-- Drop the cache as soon as a new file starts loading, so a stale subtitle
+-- list from the previous video can't be served if the user hasn't reopened
+-- the search menu yet (mpv sessions commonly move on to the next episode
+-- without ever closing).
+mp.register_event("start-file", clear_sub_cache)
 
 -- ─── uosc integration ─────────────────────────────────────────────────────────
 
@@ -231,10 +273,14 @@ local function open_search_menu()
     local subs = load_active_subtitles()
     if not subs then return end
 
-    -- Pause playback while the menu is open; remember the original state
-    was_paused = mp.get_property_bool("pause")
-    if not was_paused then
-        mp.set_property_bool("pause", true)
+    -- Pause playback while the menu is open; remember the original state.
+    -- Skipped entirely when pause_on_open is off, so playback is never
+    -- touched and the restore step below has nothing to undo.
+    if config.pause_on_open then
+        was_paused = mp.get_property_bool("pause")
+        if not was_paused then
+            mp.set_property_bool("pause", true)
+        end
     end
 
     local items = {}
@@ -268,12 +314,12 @@ mp.register_script_message("sub-search-event", function(json)
             mp.commandv("script-message-to", "uosc", "close-menu", "sub_search")
             mp.commandv("seek", time, "absolute+exact")
         end
-        if not was_paused then
+        if config.pause_on_open and not was_paused then
             mp.set_property_bool("pause", false)
         end
     elseif event.type == "close" then
         -- Menu was closed without selecting anything — restore playback state
-        if not was_paused then
+        if config.pause_on_open and not was_paused then
             mp.set_property_bool("pause", false)
         end
     end
