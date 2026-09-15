@@ -8,15 +8,12 @@ READ BEFORE USE:
   1. This script does NOT bind any key by default (on purpose). You must add
      bindings yourself in your input.conf, for example:
 
-         F script-binding anime-skip         -- perform the skip
-         G script-binding anime-skip-menu    -- open the submit/vote menu
-
-     (script-binding names are "anime-skip" and "anime-skip-menu")
+         F1 script-binding anime-skip         -- perform the skip
+         F2 script-binding anime-skip-menu    -- open the submit/vote menu
 
   2. Dependencies that must be installed and available in PATH:
-       - curl       (all HTTP requests go through it, mpv Lua has no networking)
-       - mkdir      (POSIX "mkdir -p" is used to create the cache directory;
-                     this assumes a Linux/macOS environment)
+       - curl       (all HTTP requests go through it, mpv Lua has no networking;
+                     ships by default on Windows, macOS, and most Linux)
        - python3    (used to run the anitopy filename-parsing wrapper and the
                      fuzzy title-matching helper; both use only the standard
                      library plus anitopy, no extra pip packages beyond that)
@@ -24,19 +21,23 @@ READ BEFORE USE:
                      https://github.com/kaonashi-2/anitopy)
      Also requires two small wrapper scripts to be present next to each other:
        - "lookup.py" (calls anitopy.parse() on the filename, prints JSON)
-       - "match.py"  (scores Shikimori candidates against our title using
-                      difflib.SequenceMatcher, prints the best index + score)
-     Default location for both: "<mpv config dir>/scripts/anime-skip/"
+       - "match.py"  (scores Shikimori candidates against our title via
+                      difflib.SequenceMatcher + explicit season-marker
+                      detection, and - when a season is split into
+                      multiple "Part N" MAL/Shikimori entries - resolves
+                      which part + local episode number a fansub group's
+                      absolute episode number actually falls into.
+                      Prints the best index, score, and optionally a
+                      corrected episode number.)
+     Default location for both: "~~/scripts/anime-skip/"
      (see ANITOPY_LOOKUP_PATH / MATCH_SCRIPT_PATH below).
 
-  3. Cache location: "<mpv config dir>/cache/anime-skip_cache"
-     (usually ~/.config/mpv/cache/anime-skip_cache). One small JSON file is
+  3. Cache location: "~~/cache/anime-skip_cache"
+     (usually ~~/.config/mpv/cache/anime-skip_cache). One small JSON file is
      stored per source filename so repeated keypresses on the same episode
      never repeat the network lookups.
-     A separate file, "<mpv config dir>/cache/anime-skip_id", holds a random
-     submitter ID used when submitting/voting on timestamps (see step 6).
-     It's a plain file, not inside anime-skip_cache, so it survives cache
-     auto-cleaning scripts that sweep that directory.
+     A separate file, "~~/cache/anime-skip_id", holds a random
+     submitter ID used when submitting/voting on timestamps.
 
   4. Optional: the "anime-skip-menu" keybinding opens a uosc menu (requires
      uosc: https://github.com/tomasklaen/uosc) showing what was resolved for
@@ -57,7 +58,7 @@ READ BEFORE USE:
        (via match.py) and take the best-scoring one, provided it clears a
        minimum similarity threshold; below that, treat it as not found.
     4. Query the AniSkip API (api.aniskip.com) for op/ed timestamps using
-       the MAL ID from step 3.
+       the MAL ID.
     5. If the current playback position falls inside an op/ed interval,
        seek to the end of it. Otherwise show a message and do nothing.
 
@@ -66,11 +67,10 @@ READ BEFORE USE:
       schemes may still fail.
     - The fuzzy match threshold is a heuristic; very obscure/short titles
       could still be mismatched or wrongly rejected.
-    - All OSD messages are in English, as requested.
 ================================================================================
 ]]
 
-local mp = mp
+local mp = require 'mp'
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
@@ -83,7 +83,7 @@ local ANISKIP_API_URL = "https://api.aniskip.com/v2/skip-times"
 -- Shikimori asks API clients to identify themselves with a descriptive
 -- User-Agent (their own docs/wrappers all set one explicitly); a generic
 -- one is more likely to get blocked by their anti-bot protection.
-local USER_AGENT = "anime-skip.lua/1.0 (mpv script; https://github.com/synacktraa/ani-skip)"
+local USER_AGENT = "anime-skip.lua/1.0 (mpv script; https://github.com/AkuLinker/mpv-config)"
 
 -- Minimum difflib.SequenceMatcher ratio (0-1) for a Shikimori candidate to
 -- be accepted; below this, we report "not found" rather than risk skipping
@@ -91,13 +91,13 @@ local USER_AGENT = "anime-skip.lua/1.0 (mpv script; https://github.com/synacktra
 local FUZZY_MATCH_THRESHOLD = 0.6
 
 -- anitopy filename-parsing wrapper and fuzzy-matching helper (see header)
-local PYTHON_CMD = "python3" -- change to "python" if that's what your system provides
+local PYTHON_CMD = "python3" -- change to "python" if that's what your system provides (typical on Windows)
 local SCRIPTS_DIR = utils.join_path(
     mp.command_native({"expand-path", "~~/"}), "scripts/anime-skip")
 local ANITOPY_LOOKUP_PATH = utils.join_path(SCRIPTS_DIR, "lookup.py")
 local MATCH_SCRIPT_PATH = utils.join_path(SCRIPTS_DIR, "match.py")
 
--- cache dir: "<mpv config dir>/cache/anime-skip_cache"
+-- cache dir: "~~/cache/anime-skip_cache"
 local function get_cache_dir()
     local config_dir = mp.command_native({"expand-path", "~~/"})
     return utils.join_path(utils.join_path(config_dir, "cache"), "anime-skip_cache")
@@ -105,7 +105,7 @@ end
 
 local CACHE_DIR = get_cache_dir()
 
--- submitter id file: "<mpv config dir>/cache/anime-skip_id" - deliberately
+-- submitter id file: "~~/cache/anime-skip_id" - deliberately
 -- a plain file OUTSIDE of CACHE_DIR, so cache auto-cleaning scripts that
 -- sweep anime-skip_cache don't wipe it out from under us.
 local SUBMITTER_ID_PATH = utils.join_path(
@@ -191,23 +191,44 @@ local function get_source_name()
     return mp.get_property("filename")
 end
 
+-- mpv embeds LuaJIT, which exposes jit.os ("Windows"/"OSX"/"Linux"/"BSD"/
+-- "POSIX"/"Other") for platform checks, without shelling out just to
+-- detect the OS. Computed once and shared by everything below that needs
+-- to branch on platform (opening URLs, creating directories).
+local OS_NAME = (jit and jit.os) or "Linux"
+
 -- Builds a "run" command (for a uosc Item.value) that opens `url` in the
--- system's default browser, on whichever OS we're running on. mpv embeds
--- LuaJIT, which exposes jit.os ("Windows"/"OSX"/"Linux"/"BSD"/"POSIX"/
--- "Other") for exactly this kind of check, without shelling out just to
--- detect the platform.
+-- system's default browser, on whichever OS we're running on.
 local function open_url_command(url)
-    local os_name = (jit and jit.os) or "Linux"
-    if os_name == "Windows" then
+    if OS_NAME == "Windows" then
         -- "start" is a cmd builtin, not a real executable; the empty ""
         -- argument is required because "start" treats the first quoted
         -- argument as the window title, not the thing to open.
         return {"run", "cmd", "/c", "start", "", url}
-    elseif os_name == "OSX" then
+    elseif OS_NAME == "OSX" then
         return {"run", "open", url}
     else
         return {"run", "xdg-open", url}
     end
+end
+
+-- Creates `dir` (and any missing parent directories), ignoring the result -
+-- every call site here just wants the directory to exist afterwards and
+-- doesn't care whether it already did. POSIX (Linux/macOS) has a real
+-- "mkdir" executable with -p for this; Windows has neither a standalone
+-- mkdir.exe nor a -p flag, but cmd's builtin "mkdir" already creates all
+-- intermediate directories by default without needing one.
+local function ensure_dir_exists(dir)
+    local args
+    if OS_NAME == "Windows" then
+        args = {"cmd", "/c", "mkdir", dir}
+    else
+        args = {"mkdir", "-p", dir}
+    end
+    mp.command_native({
+        name = "subprocess", capture_stdout = true, capture_stderr = true,
+        args = args,
+    })
 end
 
 ----------------------------------------------------------------------
@@ -262,10 +283,7 @@ end
 -- guessing blindly why JSON parsing failed (Cloudflare challenge page,
 -- rate limit message, unexpected format, etc).
 local function dump_debug_response(label, body)
-    mp.command_native({
-        name = "subprocess", capture_stdout = true, capture_stderr = true,
-        args = {"mkdir", "-p", CACHE_DIR},
-    })
+    ensure_dir_exists(CACHE_DIR)
     local path = utils.join_path(CACHE_DIR, "last_error_" .. label .. ".txt")
     local f = io.open(path, "w")
     if f then
@@ -275,16 +293,24 @@ local function dump_debug_response(label, body)
     return path
 end
 
-local function http_get_json(url)
-    local res = mp.command_native({
+-- Shared subprocess-invocation wrapper for every curl call in this script.
+-- Each call site still builds its own args table (they legitimately
+-- differ: GET vs POST, -L, Content-Type header, etc) - this only removes
+-- the repeated mp.command_native boilerplate around them.
+local function run_curl(args)
+    return mp.command_native({
         name = "subprocess",
         capture_stdout = true,
         capture_stderr = true,
-        args = {
-            "curl", "-s", "-L", "-g", "-A", USER_AGENT,
-            "-H", "Accept: application/json",
-            "--max-time", "10", url,
-        },
+        args = args,
+    })
+end
+
+local function http_get_json(url)
+    local res = run_curl({
+        "curl", "-s", "-L", "-g", "-A", USER_AGENT,
+        "-H", "Accept: application/json",
+        "--max-time", "10", url,
     })
 
     if res == nil then
@@ -315,12 +341,7 @@ end
 ----------------------------------------------------------------------
 
 local function ensure_cache_dir()
-    mp.command_native({
-        name = "subprocess",
-        capture_stdout = true,
-        capture_stderr = true,
-        args = {"mkdir", "-p", CACHE_DIR},
-    })
+    ensure_dir_exists(CACHE_DIR)
 end
 
 local function cache_path_for(filename)
@@ -438,18 +459,13 @@ query($s: String) {
 -- list of anime objects (each with malId + all name variants), or nil+err.
 local function shikimori_graphql_search(search_title)
     local body = utils.format_json({query = SHIKIMORI_GRAPHQL_QUERY, variables = {s = search_title}})
-    local res = mp.command_native({
-        name = "subprocess",
-        capture_stdout = true,
-        capture_stderr = true,
-        args = {
-            "curl", "-s", "-g", "-A", USER_AGENT,
-            "-H", "Content-Type: application/json",
-            "-H", "Accept: application/json",
-            "--max-time", "10",
-            "-d", body,
-            SHIKIMORI_GRAPHQL_URL,
-        },
+    local res = run_curl({
+        "curl", "-s", "-g", "-A", USER_AGENT,
+        "-H", "Content-Type: application/json",
+        "-H", "Accept: application/json",
+        "--max-time", "10",
+        "-d", body,
+        SHIKIMORI_GRAPHQL_URL,
     })
 
     if res == nil or res.status ~= 0 then
@@ -549,19 +565,29 @@ end
 -- is textually closer to "title S4" than a real "4th Season" name is).
 local function shikimori_resolve(search_title, base_title, season, episode)
     local animes, err = shikimori_graphql_search(search_title)
-    if not animes then return nil, nil, episode, err end
+    if not animes then return nil, nil, episode, nil, err end
 
     local best_index, score, resolved_episode = fuzzy_match_index(base_title, season, episode, animes)
     if not best_index or score < FUZZY_MATCH_THRESHOLD then
-        return nil, nil, episode, "shikimori_not_found"
+        return nil, nil, episode, nil, "shikimori_not_found"
     end
 
     local best = animes[best_index]
+    if not best then
+        msg.error("anime-skip: match.py returned an out-of-range index (" .. tostring(best_index) .. ")")
+        return nil, nil, episode, nil, "shikimori_not_found"
+    end
     if not best.malId then
-        return nil, nil, episode, "shikimori_no_mal_link"
+        return nil, nil, episode, nil, "shikimori_no_mal_link"
     end
 
-    return tonumber(best.id), tonumber(best.malId), resolved_episode or episode, nil
+    -- Shikimori's "name" field is the romaji (Latin-script) title - this
+    -- is the exact entry we matched (e.g. "... 2nd Season"), which is far
+    -- less confusing next to a part-offset-corrected episode number than
+    -- the generic, season-less anitopy title would be.
+    local resolved_title = best.name
+
+    return tonumber(best.id), tonumber(best.malId), resolved_episode or episode, resolved_title, nil
 end
 
 local function fetch_skip_times(mal_id, episode, episode_length)
@@ -615,7 +641,7 @@ end
 ----------------------------------------------------------------------
 -- Own-submission tracking
 --
--- AniSkip's GET response never exposes who submitted a timestamp
+-- AniSkip's GET response doesn't exposes who submitted a timestamp
 -- (submitterId is write-only, only accepted on POST) - so instead of
 -- asking the server "is this mine", we keep our own local record of
 -- skipIds we've submitted and check against that.
@@ -656,12 +682,10 @@ local function mark_submitted(skip_id)
 
     local list = {}
     for id, _ in pairs(ids) do table.insert(list, id) end
+    table.sort(list)
 
     local dir = utils.split_path(SUBMITTED_IDS_PATH)
-    mp.command_native({
-        name = "subprocess", capture_stdout = true, capture_stderr = true,
-        args = {"mkdir", "-p", dir},
-    })
+    ensure_dir_exists(dir)
     local out = io.open(SUBMITTED_IDS_PATH, "w")
     if out then
         out:write(utils.format_json(list))
@@ -680,6 +704,16 @@ local function refresh_own_flags()
     state.ed_is_own = is_own_submission(state.ed_skip_id)
 end
 
+-- Failures that mean "the service didn't answer right now" rather than
+-- "we asked and it said no" - these are NOT written to the per-file cache,
+-- so a transient outage doesn't get stuck there forever; next time this
+-- file is opened (a new session, or after reset_state), it's retried
+-- fresh instead of replaying a stale negative result.
+local TRANSIENT_ERROR_KINDS = {
+    shikimori_unavailable = true,
+    aniskip_unavailable = true,
+}
+
 local function fail(filename, title, season, episode, mal_id, shiki_id, err_kind)
     osd(format_diagnostic(title, season, episode, mal_id, err_kind), 5)
     state.resolved = true
@@ -690,7 +724,9 @@ local function fail(filename, title, season, episode, mal_id, shiki_id, err_kind
     state.mal_id = mal_id
     state.shiki_id = shiki_id
     state.err_kind = err_kind
-    persist_state()
+    if not TRANSIENT_ERROR_KINDS[err_kind] then
+        persist_state()
+    end
 end
 
 local function apply_cached(cached)
@@ -730,18 +766,19 @@ local function resolve_current_anime()
         return false
     end
 
-    local shiki_id, mal_id, resolved_episode, resolve_err = shikimori_resolve(search_title, display_title, season, episode)
+    local shiki_id, mal_id, resolved_episode, resolved_title, resolve_err = shikimori_resolve(search_title, display_title, season, episode)
     if not mal_id then
         fail(filename, display_title, season, episode, nil, nil, resolve_err)
         return false
     end
     episode = resolved_episode
     state.episode = episode
+    state.title_guess = resolved_title or display_title
 
     local episode_length = mp.get_property_number("duration")
     local skip_times, skip_err = fetch_skip_times(mal_id, episode, episode_length)
     if not skip_times then
-        fail(filename, display_title, season, episode, mal_id, shiki_id, skip_err)
+        fail(filename, state.title_guess, season, episode, mal_id, shiki_id, skip_err)
         return false
     end
 
@@ -755,7 +792,7 @@ local function resolve_current_anime()
     refresh_own_flags()
     persist_state()
 
-    osd("Identified: " .. display_title .. ", episode " .. tostring(episode), 3)
+    osd("Identified: " .. state.title_guess .. ", episode " .. tostring(episode), 3)
     return true
 end
 
@@ -803,10 +840,7 @@ local function get_submitter_id()
 
     local id = generate_submitter_id()
     local dir = utils.split_path(SUBMITTER_ID_PATH)
-    mp.command_native({
-        name = "subprocess", capture_stdout = true, capture_stderr = true,
-        args = {"mkdir", "-p", dir},
-    })
+    ensure_dir_exists(dir)
     local out = io.open(SUBMITTER_ID_PATH, "w")
     if out then
         out:write(id)
@@ -842,30 +876,31 @@ end
 ----------------------------------------------------------------------
 
 local function http_post_json(url, body)
-    local res = mp.command_native({
-        name = "subprocess",
-        capture_stdout = true,
-        capture_stderr = true,
-        args = {
-            "curl", "-s", "-g", "-A", USER_AGENT,
-            "-H", "Content-Type: application/json",
-            "-H", "Accept: application/json",
-            "--max-time", "10",
-            "-X", "POST", "-d", body,
-            url,
-        },
+    local res = run_curl({
+        "curl", "-s", "-g", "-A", USER_AGENT,
+        "-H", "Content-Type: application/json",
+        "-H", "Accept: application/json",
+        "--max-time", "10",
+        "-X", "POST", "-d", body,
+        url,
     })
 
-    if res == nil or res.status ~= 0 then
-        return nil, "network error"
+    if res == nil then
+        return nil, "failed to start curl"
+    end
+    if res.status ~= 0 then
+        return nil, "curl exited with status " .. tostring(res.status)
+            .. (res.stderr and (" (" .. res.stderr .. ")") or "")
     end
     if not res.stdout or res.stdout == "" then
-        return nil, "empty response"
+        return nil, "empty response from " .. url
     end
 
     local ok, data = pcall(utils.parse_json, res.stdout)
     if not ok or type(data) ~= "table" then
-        return nil, "invalid response"
+        local path = dump_debug_response("post_response", res.stdout)
+        msg.error("anime-skip: non-JSON response from " .. url .. ", saved to " .. path)
+        return nil, "server returned non-JSON data (see " .. path .. ")"
     end
     return data, nil
 end
@@ -1010,6 +1045,17 @@ local function build_menu_items()
         })
     end
 
+    -- Re-query AniSkip only (skip re-parsing the filename / re-searching
+    -- Shikimori, since mal_id and episode are already known and haven't
+    -- changed) - lets you retry after someone else submits timestamps
+    -- without having to wait for a whole new mpv session.
+    if has_submit then
+        table.insert(items, {
+            title = "Refresh from AniSkip",
+            value = {"script-message-to", SCRIPT_NAME, "anime-skip-refresh"},
+        })
+    end
+
     -- Submit section: shown per-segment - Opening and Ending are entirely
     -- independent submissions, so a segment only appears here if AniSkip
     -- doesn't already have data for THAT specific segment (submitting a
@@ -1140,7 +1186,6 @@ mp.register_script_message("anime-skip-submit", function(kind)
         state[kind .. "_start"], state[kind .. "_end"], state[kind .. "_skip_id"] = pending.start_time, pending.end_time, result
         state[kind .. "_is_own"] = true
         mark_submitted(result)
-        -- only this segment's draft is consumed - the other one (if any) is untouched
         state.pending[kind .. "_start"] = nil
         state.pending[kind .. "_end"] = nil
         state.found = true
@@ -1172,6 +1217,41 @@ mp.register_script_message("anime-skip-vote", function(kind, vote_type)
     send_menu(false) -- refresh in place: shows the rated status instead of the buttons
 end)
 
+-- Re-queries AniSkip for the already-known mal_id/episode - no need to
+-- re-parse the filename or re-search Shikimori, neither has changed.
+-- Useful when AniSkip had no data a moment ago but someone may have
+-- submitted timestamps since.
+mp.register_script_message("anime-skip-refresh", function()
+    if not state.mal_id or not state.episode then return end
+
+    local episode_length = mp.get_property_number("duration")
+    local skip_times, skip_err = fetch_skip_times(state.mal_id, state.episode, episode_length)
+    if not skip_times then
+        state.err_kind = skip_err
+        if not TRANSIENT_ERROR_KINDS[skip_err] then
+            persist_state()
+        end
+        osd(format_diagnostic(state.title_guess, state.season, state.episode, state.mal_id, skip_err), 5)
+        send_menu(false)
+        return
+    end
+
+    if skip_times.op_start then
+        state.op_start, state.op_end, state.op_skip_id = skip_times.op_start, skip_times.op_end, skip_times.op_skip_id
+    end
+    if skip_times.ed_start then
+        state.ed_start, state.ed_end, state.ed_skip_id = skip_times.ed_start, skip_times.ed_end, skip_times.ed_skip_id
+    end
+    refresh_own_flags()
+    state.found = true
+    state.err_kind = nil
+    persist_state()
+    osd("Refreshed - AniSkip now has data for this episode", 3)
+    send_menu(false)
+end)
+
+-- No default key binding (nil) — bind via input.conf, e.g.:
+--   F2 script-binding anime-skip-menu
 mp.add_key_binding(nil, "anime-skip-menu", function()
     if not state.resolved then
         resolve_current_anime()
@@ -1215,5 +1295,5 @@ local function do_skip()
 end
 
 -- No default key binding (nil) — bind via input.conf, e.g.:
---   F script-binding anime-skip
+--   F1 script-binding anime-skip
 mp.add_key_binding(nil, "anime-skip", do_skip)

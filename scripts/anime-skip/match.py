@@ -112,9 +112,14 @@ def score_candidate(title_norm, target_season, fields):
             score = min(1.0, score + 0.3)
         elif any_field_has_other_season:
             score *= 0.3  # explicitly a different season - heavily penalize
-        else:
-            score *= 0.5  # no season marker anywhere - likely a plain/season-1
-            # entry, and we're specifically looking for season >= 2
+        elif target_season != 1:
+            score *= 0.5  # no season marker anywhere, and we wanted season >= 2
+            # - most likely this candidate IS season 1 (which is why it has
+            # no marker), just not the season we're after.
+        # else: target_season == 1 and no marker anywhere - this is the
+        # NORMAL, expected state for a genuine season-1 entry (nobody
+        # labels the debut season "Season 1"/"S1" in its own title), so
+        # don't penalize it the way we would for season >= 2.
     else:
         if any_field_has_other_season:
             score *= 0.3  # our file had no season marker; a candidate that
@@ -124,6 +129,14 @@ def score_candidate(title_norm, target_season, fields):
 
 
 PART_RE = re.compile(r"\bpart (\d+)\b")
+
+# High bar for base-title similarity specifically for multi-part grouping:
+# matching season text alone isn't enough evidence that two candidates are
+# parts of the SAME franchise (an unrelated show could easily mention
+# "Season 2" too) - genuine same-franchise part siblings should score at
+# or very near 1.0 on title alone via the containment rule in
+# base_title_score.
+PART_GROUPING_TITLE_THRESHOLD = 0.9
 
 
 def extract_part_number(fields):
@@ -142,7 +155,24 @@ def extract_part_number(fields):
     return None
 
 
-def resolve_part(season_matches, target_episode):
+def extract_season_number(fields):
+    """Season number (2..10) implied by season_markers() text, or 1 if no
+    field declares any season at all. Used to order same-franchise
+    candidates when the FILENAME ITSELF has no season marker (target_season
+    is None) but some fansub groups number episodes straight through
+    multiple separate season entries without ever resetting or marking
+    which season - see the target_season is None branch in main()."""
+    for field in fields:
+        if not field:
+            continue
+        loose = loose_normalize(field)
+        for n in range(2, 11):
+            if matches_season(loose, n):
+                return n
+    return 1
+
+
+def resolve_part(part_candidates, target_episode):
     """Given candidates that already match the target season and each
     declare a part number, figure out which part `target_episode`
     (an absolute, cumulative episode number as fansub groups usually
@@ -151,7 +181,7 @@ def resolve_part(season_matches, target_episode):
     can't be determined (e.g. unknown episode counts blocking the count,
     or the number falls outside every known part's range).
     """
-    parts = sorted(season_matches, key=lambda c: c["part"])
+    parts = sorted(part_candidates, key=lambda c: c["part"])
 
     cumulative = 0
     for c in parts:
@@ -172,20 +202,17 @@ def resolve_part(season_matches, target_episode):
 
 
 def main():
-    payload = json.loads(sys.stdin.read())
-    title = payload["title"]
+    try:
+        payload = json.loads(sys.stdin.read())
+        title = payload["title"]
+        candidates = payload["candidates"]  # [{"index", "fields", "episodes"}, ...]
+    except Exception as e:
+        print("match.py: invalid input: {}".format(e), file=sys.stderr)
+        sys.exit(1)
+
     target_season = payload.get("season")  # number or None
     target_episode = payload.get("episode")  # absolute episode number, or None
-    candidates = payload["candidates"]  # [{"index", "fields", "episodes"}, ...]
     title_norm = normalize(title)
-
-    # High bar for base-title similarity specifically for multi-part
-    # grouping: matching season text alone isn't enough evidence that two
-    # candidates are parts of the SAME franchise (an unrelated show could
-    # easily mention "Season 2" too) - genuine same-franchise part
-    # siblings should score at or very near 1.0 on title alone via the
-    # containment rule in base_title_score.
-    PART_GROUPING_TITLE_THRESHOLD = 0.9
 
     scored = []
     for cand in candidates:
@@ -194,8 +221,10 @@ def main():
         is_same_franchise = best_base >= PART_GROUPING_TITLE_THRESHOLD
         scored.append({
             "index": cand["index"],
+            "fields": fields,
             "score": score,
             "matches_season": matches_season_flag,
+            "same_franchise": is_same_franchise,
             # A season-matching candidate with no "part N" wording at all is
             # treated as part 1 - real franchises often label only the
             # LATER installments explicitly ("Season 2 Part 2") while the
@@ -204,18 +233,46 @@ def main():
             "episodes": cand.get("episodes"),
         })
 
-    # Multi-part disambiguation: only among candidates that matched the
-    # target season AND are confidently the same franchise (see threshold
-    # above). A single plain "Season N" candidate (no siblings) never
-    # enters this path, so ordinary single-part seasons behave exactly
-    # as before.
-    season_matches = [c for c in scored if c["part"] is not None]
-    if target_episode is not None and len(season_matches) >= 2:
-        resolved = resolve_part(season_matches, target_episode)
-        if resolved:
-            best_index, local_episode = resolved
-            print(json.dumps({"best_index": best_index, "score": 1.0, "episode": local_episode}))
-            return
+    if target_episode is not None:
+        if target_season is not None:
+            # Case 1: the filename DID declare a season - only disambiguate
+            # "Part N" splits WITHIN that season. Only among candidates that
+            # matched the target season AND are confidently the same
+            # franchise (see threshold above). A single plain "Season N"
+            # candidate (no siblings) never enters this path, so ordinary
+            # single-part seasons behave exactly as before.
+            part_candidates = [c for c in scored if c["part"] is not None]
+            if len(part_candidates) >= 2:
+                resolved = resolve_part(part_candidates, target_episode)
+                if resolved:
+                    best_index, local_episode = resolved
+                    print(json.dumps({"best_index": best_index, "score": 1.0, "episode": local_episode}))
+                    return
+        else:
+            # Case 2: the filename has NO season marker at all - some
+            # fansub groups number straight through multiple separate
+            # season entries without ever marking or resetting (e.g.
+            # episode 23 of a show whose Shikimori/MAL entry is split into
+            # a 12-episode Season 1 and a Season 2 that continues from 13).
+            # Group same-franchise candidates by their own (textually
+            # implied) season number and try the same cumulative-offset
+            # placement used for Part splits above.
+            # Safety gate: only attempt this if at least one sibling
+            # EXPLICITLY declares season >= 2 - otherwise there's no real
+            # evidence this is a multi-season situation at all, and
+            # grouping could just be colliding an unrelated same-titled
+            # movie/special (which would also default to "season 1") with
+            # the real season-1 entry.
+            season_candidates = [
+                {"index": c["index"], "part": extract_season_number(c["fields"]), "episodes": c["episodes"]}
+                for c in scored if c["same_franchise"]
+            ]
+            if len(season_candidates) >= 2 and any(c["part"] > 1 for c in season_candidates):
+                resolved = resolve_part(season_candidates, target_episode)
+                if resolved:
+                    best_index, local_episode = resolved
+                    print(json.dumps({"best_index": best_index, "score": 1.0, "episode": local_episode}))
+                    return
 
     best = max(scored, key=lambda c: c["score"])
     print(json.dumps({"best_index": best["index"], "score": best["score"]}))
