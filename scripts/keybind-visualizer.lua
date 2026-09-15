@@ -1,10 +1,11 @@
 -- keybind-visualizer.lua
--- Source: https://github.com/v-amorim/mpv
+-- Source: https://github.com/v-amorim/moonlight-mpv
 --
--- An interactive on-screen keyboard for mpv. Toggle it, then move the mouse
--- or press a key/mouse button to see its bindings. While open, all keyboard
--- and mouse input is grabbed: pressing something highlights it instead of
--- running its normal command. Only ESC closes it.
+-- An interactive on-screen keyboard/mouse overlay for mpv. Toggle it, then
+-- press or hover a key/button to see its bindings, or click the search box
+-- to type and filter. While open, all keyboard and mouse input is grabbed:
+-- nothing reaches the player until you close it. Close with ESC, or by
+-- pressing the same key/binding that opened it.
 --
 -- Bindings are read live from mpv's "input-bindings" property, so it reflects
 -- whatever the user has in input.conf (plus builtin defaults, unless hidden
@@ -19,7 +20,7 @@
 --     pause_on_open=yes                             (yes|no, pause video while open)
 --
 -- Activate with:  script-binding keybind-visualizer
--- Close with ESC, or by pressing the same key again.
+-- Close with ESC.
 
 local mp = require("mp")
 local utils = require("mp.utils")
@@ -117,6 +118,7 @@ end
 local KEYS = {}
 local GRID_W, GRID_H = 1, 1
 local ID2KEY = {}
+local MPV2ID = {}
 local layout_data = nil
 local layout_names = {}
 local layout_name = (options.layout or "abnt2"):lower()
@@ -182,10 +184,12 @@ local function rebuild_keys()
 	end
 
 	ID2KEY = {}
+	MPV2ID = {}
 	for _, k in ipairs(KEYS) do
 		ID2KEY[k.id] = k
 		if k.mpv then
 			k.mpv_lc = k.mpv:lower()
+			MPV2ID[k.mpv_lc] = k.id
 		end
 	end
 end
@@ -220,19 +224,22 @@ end
 
 local C = {}
 for name, rgb in pairs({
-	dim = "0d0e17", -- #0d0e17  full-screen dim behind the keyboard
-	key_bg = "191726", -- #191726  unbound key fill
-	key_brd = "2d3654", -- #2d3654  unbound key border
-	bind_bg = "1f2335", -- #1f2335  bound key fill
-	bind_brd = "3c466f", -- #3c466f  bound key border
-	hover_bg = "3c466f", -- #3c466f  hovered key fill
-	hover_brd = "7386d0", -- #7386d0  hovered key border
-	text = "f8eaf8", -- #f8eaf8  key labels + info panel text
-	text_dim = "aea4bf", -- #aea4bf  unbound key labels + "No bindings" text
-	panel_bg = "191726", -- #191726  info panel background
-	panel_brd = "3c466f", -- #3c466f  info panel border
-	accent = "7386d0", -- #7386d0  binding combos + layout button + cursor dot
-	header = "ced9ff", -- #ced9ff  info panel title (key name)
+	dim = "0D0E17", -- #0D0E17  full-screen dim behind the keyboard
+	key_bg = "141726", -- #141726  unbound key fill
+	key_brd = "1C2033", -- #1C2033  unbound key border
+	bind_bg = "1C2033", -- #1C2033  bound key fill
+	bind_brd = "252A42", -- #252A42  bound key border
+	hover_bg = "252A42", -- #252A42  hovered key fill
+	hover_brd = "7386D0", -- #7386D0  hovered key border
+	match_bg = "2F3654", -- #2F3654  search-matched key fill
+	match_brd = "B9C6F5", -- #B9C6F5  search-matched key border + query text
+	match_hl = "A2B0EA", -- #A2B0EA  the typed characters inside a description
+	text = "EEEEFA", -- #EEEEFA  key labels + info panel text
+	text_dim = "9BA3C4", -- #9BA3C4  unbound key labels + "No bindings" text
+	panel_bg = "141726", -- #141726  info panel background
+	panel_brd = "252A42", -- #252A42  info panel border
+	accent = "7386D0", -- #7386D0  binding combos + layout button + cursor dot
+	header = "EEEEFA", -- #EEEEFA  info panel title (key name)
 	sep = "6e7681", -- #6e7681  separator line between bindings
 }) do
 	C[name] = to_ass(rgb)
@@ -249,9 +256,15 @@ local saved_autohide = nil
 local paused_by_us = false -- true if we auto-paused on open, so close() knows to undo it
 local mouse_x, mouse_y = nil, nil
 local button_rect = nil -- clickable layout-switch button { x, y, w, h }
+local search_rect = nil -- clickable search box { x, y, w, h }
 local BK = {} -- lowercased base key -> sorted list of binding entries
 local capture_names = {} -- names of forced key bindings grabbed while open
 local toggle_key_id = nil -- layout key id currently bound to activate the script, if any
+local search_mode = false -- true while the search box has "focus" (click to enter, ESC to leave)
+local query = ""
+local query_tokens = {} -- lowercased whitespace-separated pieces of the query
+local match_ids = {} -- key id -> true, for the keys lit by the current query
+local match_list = {} -- { key_id, binding, score }, best score first
 
 ----------------------------------------------------------------------
 -- Read bindings from the input-bindings property
@@ -324,7 +337,7 @@ end
 
 -- Whether to include mpv's built-in default bindings (the ones marked
 -- "is_weak" with priority -1, still listed by mpv even when disabled).
--- See the "show_default_bindings" script-opt above.
+-- See the "show_default_bindings" script-opt.
 local function defaults_are_shown()
 	local mode = (options.show_default_bindings or "auto"):lower()
 	if mode == "yes" then
@@ -338,9 +351,54 @@ local function defaults_are_shown()
 	return enabled ~= false -- explicitly off -> hide; on/unknown -> show
 end
 
+-- mpv's own "comment" (from input-bindings) is only ever a trailing "# ..."
+-- on the SAME line as the binding -- the input.conf syntax has no concept of
+-- a heading comment applying to the lines below it. Some people still write
+-- input.conf that way (one comment, then a run of bindings it describes), so
+-- read the file ourselves and reconstruct that association as a fallback,
+-- keyed exactly like BK entries: "<lowercased base>|<c s a m flags>".
+--   # Close window
+--   q    quit
+--   й    quit          <- both get "Close window", until the next comment
+--                          or blank line resets it
+local function load_input_conf_headers()
+	local headers = {}
+	local path = mp.find_config_file("input.conf")
+	if not path then
+		return headers
+	end
+	local f = io.open(path, "r")
+	if not f then
+		return headers
+	end
+	local pending = nil
+	for line in f:lines() do
+		local trimmed = line:match("^%s*(.-)%s*$")
+		if trimmed == "" then
+			pending = nil
+		elseif trimmed:sub(1, 1) == "#" then
+			pending = trimmed:match("^#%s*(.-)%s*$")
+			if pending == "" then
+				pending = nil
+			end
+		elseif pending then
+			local key = trimmed:match("^(%S+)")
+			if key then
+				local c, s, a, m, base = parse_combo(key)
+				if base ~= "" then
+					headers[base:lower() .. "|" .. mods_key(c, s, a, m)] = pending
+				end
+			end
+		end
+	end
+	f:close()
+	return headers
+end
+
 local function build_bindings()
 	BK = {}
 	local show_all = defaults_are_shown()
+	local headers = load_input_conf_headers()
 	local list = mp.get_property_native("input-bindings") or {}
 	-- keep the highest-priority binding for each (base, modifiers) combo
 	local best = {}
@@ -357,6 +415,10 @@ local function build_bindings()
 					local pr = e.priority or 0
 					local prev = best[uid]
 					if (not prev) or pr >= prev.priority then
+						local comment = e.comment
+						if not comment or comment == "" then
+							comment = headers[uid]
+						end
 						best[uid] = {
 							priority = pr,
 							base = bk,
@@ -366,7 +428,8 @@ local function build_bindings()
 							m = m,
 							label = mods_label(c, s, a, m),
 							cmd = cmd,
-							comment = e.comment,
+							comment = comment,
+							menu = (e.comment or ""):match("^%s*#?!") ~= nil,
 						}
 					end
 				end
@@ -416,8 +479,12 @@ end
 
 -- List of { key = "<mpv key-string>", id = "<layout key id>" } to grab as
 -- forced bindings while the overlay is open: the bare physical key/button,
--- plus every modifier combo that actually has a live binding on it. Only
--- ESC is excluded (it has its own dedicated close handler).
+-- plus every modifier combo that actually has a live binding on it, plus
+-- every OTHER live "default"-section binding not covered by the drawn
+-- layout (typically the same physical key bound a second time under a
+-- different keyboard layout/language, e.g. Cyrillic "й" alongside "q") --
+-- those are grabbed too so they can't slip through, just without a
+-- highlight target since we can't tell which physical key they sit on.
 local function build_capture_keys()
 	local list, seen = {}, {}
 	local function add(keystr, id)
@@ -435,9 +502,6 @@ local function build_capture_keys()
 			list[#list + 1] = { key = keystr, id = id }
 		end
 	end
-
-	-- direct: physical keys of the drawn layout, plus every modifier combo
-	-- actually bound on them
 	for _, k in ipairs(KEYS) do
 		if k.mpv and k.mpv:upper() ~= "ESC" then
 			add(k.mpv, k.id)
@@ -449,13 +513,6 @@ local function build_capture_keys()
 			end
 		end
 	end
-
-	-- indirect: any other live "default"-section binding not covered above
-	-- (typically the same physical key bound a second time under a
-	-- different keyboard layout/language, e.g. "." alongside "/" on a
-	-- Russian layout). The drawn layout has no key for these, so just
-	-- grab and silently swallow them -- no attempt to guess which key
-	-- they physically correspond to, and no highlighting.
 	for base_lc, combos in pairs(BK) do
 		if base_lc ~= "esc" then
 			for _, b in ipairs(combos) do
@@ -463,8 +520,24 @@ local function build_capture_keys()
 			end
 		end
 	end
-
 	return list
+end
+
+-- character a physical key types into the search box, ignoring modifiers
+-- (search is case-insensitive anyway); nil if it isn't a typeable key.
+local function char_for_id(id)
+	local k = ID2KEY[id]
+	if not k or not k.mpv then
+		return nil
+	end
+	local base = k.mpv:lower()
+	if base == "space" then
+		return " "
+	end
+	if #base == 1 and base:match("[%w%-_%./+]") then
+		return base
+	end
+	return nil
 end
 
 local function has_bindings(id)
@@ -472,16 +545,126 @@ local function has_bindings(id)
 	return lst ~= nil and #lst > 0
 end
 
+local MENU_ICON = "\xE2\x89\xA1" -- ≡, marks a binding that also sits in the uosc menu
+
+local function has_menu(id)
+	for _, b in ipairs(bindings_for(id) or {}) do
+		if b.menu then
+			return true
+		end
+	end
+	return false
+end
+
 local function binding_desc(b)
-	local t = b.comment
-	if t and t ~= "" then
-		t = t:gsub("^#!%s*", ""):gsub("^#%s*", "")
+	local t = b.comment or ""
+	-- a "#!" comment is a uosc menu path: it says where the entry lives, not what
+	-- it does, so the command leads and the path trails it
+	local menu = t:match("^%s*#?!%s*(.+)$")
+	if menu then
+		-- a menu line describes itself after "?"; the rest is a path plus the
+		-- "@icon" tokens that belong to uosc-menu.lua, neither of which says what
+		-- the binding does. Parents carry descriptions of their own, so the entry's
+		-- is the one after the last "?", not the first.
+		local described = menu:match(".*%?%s*(.+)$")
+		t = described or (b.cmd .. "  \xC2\xB7  " .. menu:gsub("%s+@[%w_]+", ""))
+	else
+		t = t:gsub("^#%s*", "")
 	end
-	if not t or t == "" then
-		t = b.cmd
+	-- the command has a column of its own now, so an undescribed binding stays
+	-- blank rather than repeating it
+	return (t:gsub("%s+", " "))
+end
+
+-- prefixes that say how a command reports itself, not what it does
+local CMD_PREFIXES = {
+	["no-osd"] = true,
+	["osd-auto"] = true,
+	["osd-bar"] = true,
+	["osd-msg"] = true,
+	["osd-msg-bar"] = true,
+	["expand-properties"] = true,
+	["raw"] = true,
+	["async"] = true,
+	["sync"] = true,
+	["repeatable"] = true,
+	["nonrepeatable"] = true,
+}
+
+-- split on ";" while leaving the separators inside quoted arguments alone, which
+-- a shader list ("a.glsl;b.glsl") depends on
+local function split_commands(cmd)
+	local parts, buf, quote = {}, {}, nil
+	for i = 1, #cmd do
+		local c = cmd:sub(i, i)
+		if quote then
+			if c == quote then
+				quote = nil
+			end
+			buf[#buf + 1] = c
+		elseif c == '"' or c == "'" then
+			quote = c
+			buf[#buf + 1] = c
+		elseif c == ";" then
+			parts[#parts + 1] = table.concat(buf)
+			buf = {}
+		else
+			buf[#buf + 1] = c
+		end
 	end
-	t = t:gsub("%s+", " ")
-	return t
+	parts[#parts + 1] = table.concat(buf)
+	return parts
+end
+
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- what the binding actually does: prefixes and the osd-theme message are dropped,
+-- and the remaining commands collapse to the first one plus a count
+local function binding_cmd(cmd)
+	local kept = {}
+	for _, part in ipairs(split_commands(cmd or "")) do
+		part = trim(part)
+		local head, rest = part:match("^(%S+)%s+(.+)$")
+		while head and CMD_PREFIXES[head] do
+			part = rest
+			head, rest = part:match("^(%S+)%s+(.+)$")
+		end
+		if part ~= "" and not part:match("^script%-message%-to%s+osd_theme") then
+			kept[#kept + 1] = (part:gsub("%s+", " "))
+		end
+	end
+	if #kept == 0 then
+		return trim((cmd or ""):gsub("%s+", " "))
+	end
+	if #kept == 1 then
+		return kept[1]
+	end
+	return string.format("%s (+%d)", kept[1], #kept - 1)
+end
+
+-- combo labels carry multi-byte glyphs (arrows), so padding needs characters, not bytes
+local function ulen(s)
+	local _, n = s:gsub("[^\128-\191]", "")
+	return n
+end
+
+-- cut to a character width, marking the cut so a clipped command cannot be read
+-- as the whole of it
+local function utrunc(s, width)
+	if ulen(s) <= width then
+		return s
+	end
+	local out, taken = {}, 0
+	for ch in s:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+		if taken >= width - 1 then
+			break
+		end
+		out[#out + 1] = ch
+		taken = taken + 1
+	end
+	return table.concat(out) .. "\xE2\x80\xA6"
 end
 
 -- word-wrap a string to a max width (in characters), hard-breaking words that
@@ -536,6 +719,142 @@ local function key_name(id, label)
 		return "KP " .. s
 	end
 	return label
+end
+
+----------------------------------------------------------------------
+-- Search
+----------------------------------------------------------------------
+local function split_words(low)
+	local words, i = {}, 1
+	while true do
+		local s, e = low:find("%w+", i)
+		if not s then
+			return words
+		end
+		words[#words + 1] = { s = s, e = e }
+		i = e + 1
+	end
+end
+
+-- token as a gapped run inside one word: "dlay" finds "delay", but the run may
+-- not wander past the word's end, so "sbdly" never reaches "sub-delay"
+local function subseq_in_word(low, ws, we, tok)
+	local pos, positions, gaps = ws, {}, 0
+	for i = 1, #tok do
+		local at = low:find(tok:sub(i, i), pos, true)
+		if not at or at > we then
+			return nil
+		end
+		if i > 1 and at > pos then
+			gaps = gaps + 1
+		end
+		positions[#positions + 1] = at
+		pos = at + 1
+	end
+	local score = 100 - gaps * 20
+	if score < 1 then
+		return nil
+	end
+	return score, positions
+end
+
+-- match one token against a text and report where it landed: a literal
+-- substring first, then a gapped run inside a single word, then the initials of
+-- consecutive words. A run allowed to wander across the whole text would match
+-- nearly every binding, so it is deliberately not offered.
+-- Tokens are ASCII, so a reported byte can never sit inside a UTF-8 sequence.
+local function token_hits(text, tok)
+	local low = text:lower()
+	local positions, score, from = {}, nil, 1
+	while true do
+		local at = low:find(tok, from, true)
+		if not at then
+			break
+		end
+		for i = at, at + #tok - 1 do
+			positions[#positions + 1] = i
+		end
+		local edge = (at == 1 or not low:sub(at - 1, at - 1):match("%w")) and 30 or 0
+		score = math.max(score or 0, 200 - math.min(at, 60) + edge)
+		from = at + 1
+	end
+	if score then
+		return score, positions
+	end
+
+	local words = split_words(low)
+	local best, best_pos
+	for _, w in ipairs(words) do
+		local s, p = subseq_in_word(low, w.s, w.e, tok)
+		if s and (not best or s > best) then
+			best, best_pos = s, p
+		end
+	end
+	if best then
+		return best, best_pos
+	end
+
+	local initials, starts = {}, {}
+	for _, w in ipairs(words) do
+		initials[#initials + 1] = low:sub(w.s, w.s)
+		starts[#initials] = w.s
+	end
+	local at = table.concat(initials):find(tok, 1, true)
+	if at then
+		local pos = {}
+		for i = at, at + #tok - 1 do
+			pos[#pos + 1] = starts[i]
+		end
+		return 80, pos
+	end
+	return nil
+end
+
+local function match_score(hay, tokens)
+	local total = 0
+	for _, tok in ipairs(tokens) do
+		local s = token_hits(hay, tok)
+		if not s then
+			return nil
+		end
+		total = total + s
+	end
+	return total
+end
+
+local function compute_matches()
+	match_ids, match_list, query_tokens = {}, {}, {}
+	if query == "" then
+		return
+	end
+	local tokens = {}
+	for tok in query:lower():gmatch("%S+") do
+		tokens[#tokens + 1] = tok
+	end
+	if #tokens == 0 then
+		return
+	end
+	query_tokens = tokens
+	for base, lst in pairs(BK) do
+		local id = MPV2ID[base]
+		local name = id and key_name(id, ID2KEY[id].label) or base:upper()
+		for _, b in ipairs(lst) do
+			local hay = (b.label .. name .. " " .. binding_desc(b) .. " " .. b.cmd):lower()
+			local score = match_score(hay, tokens)
+			if score then
+				match_list[#match_list + 1] = { id = id, name = name, b = b, score = score }
+				if id then
+					match_ids[id] = true
+				end
+			end
+		end
+	end
+	table.sort(match_list, function(x, y)
+		if x.score ~= y.score then
+			return x.score > y.score
+		end
+		return (x.b.label .. x.name) < (y.b.label .. y.name)
+	end)
 end
 
 ----------------------------------------------------------------------
@@ -603,6 +922,33 @@ local function esc(s)
 	return s
 end
 
+-- colored ASS text: the query's own characters stand out from the rest
+local function highlight(text, base_col)
+	local base = string.format("{\\1c&H%s&\\b0}", base_col)
+	if #query_tokens == 0 then
+		return base .. esc(text)
+	end
+	local mask = {}
+	for _, tok in ipairs(query_tokens) do
+		local _, positions = token_hits(text, tok)
+		for _, at in ipairs(positions or {}) do
+			mask[at] = true
+		end
+	end
+	local hl = string.format("{\\1c&H%s&\\b1}", C.match_hl)
+	local out, i = {}, 1
+	while i <= #text do
+		local on = mask[i] == true
+		local j = i
+		while j < #text and (mask[j + 1] == true) == on do
+			j = j + 1
+		end
+		out[#out + 1] = (on and hl or base) .. esc(text:sub(i, j))
+		i = j + 1
+	end
+	return table.concat(out)
+end
+
 ----------------------------------------------------------------------
 -- Geometry
 ----------------------------------------------------------------------
@@ -615,7 +961,9 @@ local function compute_geom()
 		return nil
 	end
 	local w, h = dim.w, dim.h
-	local panel_units = 3.1
+	-- the panel needs room for the busiest key (6 bindings plus separators), so it
+	-- gets the larger share of the vertical stack and the keyboard shrinks to suit
+	local panel_units = 6
 	local header_units = 0.9
 	local stack = header_units + 0.3 + GRID_H + 0.6 + panel_units
 	local ku = math.min((w * 0.96) / GRID_W, (h * 0.94) / stack)
@@ -703,11 +1051,23 @@ local function build_info_lines(id)
 	local sep =
 		string.format("{\\fs%d\\1c&H%s&}%s", sep_fs, C.sep, string.rep("\xE2\x94\x80", math.floor(max_chars * 0.98)))
 
+	-- combo, command and description each start at one column, so both leading
+	-- columns pad out to their widest entry
+	local div = "\xE2\x94\x82"
+	local combo_w, cmd_w = 0, 0
+	for _, b in ipairs(lst) do
+		combo_w = math.max(combo_w, ulen(b.label .. name))
+		cmd_w = math.max(cmd_w, ulen(binding_cmd(b.cmd)))
+	end
+	local fixed = combo_w + 8 -- pads, spaces, two dividers and the menu badge
+	cmd_w = math.max(8, math.min(cmd_w, math.floor((max_chars - fixed) * 0.4)))
+	local indent = fixed + cmd_w
+
 	local budget = max_lines - 1 -- title already used one line
 	local shown = 0
 	for i, b in ipairs(lst) do
 		local combo = b.label .. name
-		local indent = #combo + 2
+		local cmd = utrunc(binding_cmd(b.cmd), cmd_w)
 		local wrapped = wrap_text(binding_desc(b), math.max(8, max_chars - indent))
 		local need = #wrapped + ((i > 1) and 1 or 0) -- +1 for the separator row
 		local reserve = (i == #lst) and 0 or 1
@@ -720,23 +1080,107 @@ local function build_info_lines(id)
 			lines[#lines + 1] = sep
 			total_h = total_h + sep_h
 		end
-		-- first physical line: accent combo + 2 spaces + first chunk
+		-- first physical line: accent combo, the command, then the menu badge
+		-- column and the first chunk of the description
 		lines[#lines + 1] = string.format(
-			"{\\fs%d\\1c&H%s&}%s{\\1c&H%s&}\\h\\h%s",
+			"{\\fs%d\\1c&H%s&}%s%s{\\1c&H%s&}\\h%s\\h%s%s{\\1c&H%s&}\\h%s\\h{\\1c&H%s&}%s\\h%s",
 			info_fs,
 			C.accent,
 			esc(combo),
-			C.text,
-			esc(wrapped[1])
+			string.rep("\\h", combo_w - ulen(combo)),
+			C.sep,
+			div,
+			highlight(cmd, C.text_dim),
+			string.rep("\\h", cmd_w - ulen(cmd)),
+			C.sep,
+			div,
+			C.accent,
+			b.menu and MENU_ICON or "\\h",
+			highlight(wrapped[1], C.text)
 		)
 		-- continuation lines: hanging indent under the description
 		for j = 2, #wrapped do
-			lines[#lines + 1] =
-				string.format("{\\fs%d\\1c&H%s&}%s%s", info_fs, C.text, string.rep("\\h", indent), esc(wrapped[j]))
+			lines[#lines + 1] = string.format(
+				"{\\fs%d}%s%s",
+				info_fs,
+				string.rep("\\h", indent),
+				highlight(wrapped[j], C.text)
+			)
 		end
 		total_h = total_h + #wrapped * line_h
 		budget = budget - need
 		shown = shown + 1
+	end
+	return lines, total_h
+end
+
+local function build_search_lines()
+	local g = geom
+	local info_fs = math.max(1, round(g.ku * 0.3))
+	local line_h = info_fs * 1.2
+
+	local lines = {}
+	lines[#lines + 1] = string.format(
+		"{\\fs%d\\b1\\1c&H%s&}%d match%s{\\b0\\1c&H%s&}",
+		info_fs,
+		C.match_brd,
+		#match_list,
+		#match_list == 1 and "" or "es",
+		C.text
+	)
+	local total_h = line_h
+	if #match_list == 0 then
+		lines[#lines + 1] = string.format("{\\fs%d\\1c&H%s&}Nothing matches that.", info_fs, C.text_dim)
+		return lines, total_h + line_h
+	end
+
+	local max_lines = math.max(3, math.floor((g.panel_max_h - g.ku * 0.5) / line_h))
+	local inner_px = GRID_W * g.ku - g.ku * 0.9
+	local max_chars = math.max(20, math.floor(inner_px / (info_fs * 0.6)))
+
+	local budget = max_lines - 1
+	local shown = math.min(#match_list, budget)
+	local combo_w, cmd_w = 0, 0
+	for i = 1, shown do
+		combo_w = math.max(combo_w, ulen(match_list[i].b.label .. match_list[i].name))
+		cmd_w = math.max(cmd_w, ulen(binding_cmd(match_list[i].b.cmd)))
+	end
+
+	-- the command column takes what it needs, up to a third of the row, so the
+	-- description keeps the rest
+	local fixed = combo_w + 8
+	cmd_w = math.max(8, math.min(cmd_w, math.floor((max_chars - fixed) * 0.4)))
+	local desc_w = math.max(8, max_chars - fixed - cmd_w)
+	local div = "\xE2\x94\x82"
+
+	for i, hit in ipairs(match_list) do
+		local combo = hit.b.label .. hit.name
+		local cmd = utrunc(binding_cmd(hit.b.cmd), cmd_w)
+		local desc = wrap_text(binding_desc(hit.b), desc_w)[1]
+		if budget < ((i < #match_list) and 2 or 1) then
+			lines[#lines + 1] =
+				string.format("{\\fs%d\\1c&H%s&}... (+%d more)", info_fs, C.text_dim, #match_list - i + 1)
+			total_h = total_h + line_h
+			break
+		end
+		lines[#lines + 1] = string.format(
+			"{\\fs%d\\1c&H%s&}%s%s{\\1c&H%s&}\\h%s\\h%s%s{\\1c&H%s&}\\h%s\\h{\\1c&H%s&}%s\\h%s",
+			info_fs,
+			C.accent,
+			esc(combo),
+			string.rep("\\h", combo_w - ulen(combo)),
+			C.sep,
+			div,
+			highlight(cmd, C.text_dim),
+			string.rep("\\h", cmd_w - ulen(cmd)),
+			C.sep,
+			div,
+			C.accent,
+			hit.b.menu and MENU_ICON or "\\h",
+			highlight(desc, C.text)
+		)
+		total_h = total_h + line_h
+		budget = budget - 1
 	end
 	return lines, total_h
 end
@@ -810,6 +1254,8 @@ local function render()
 		local bg, brd
 		if k.id == hovered then
 			bg, brd = C.hover_bg, C.hover_brd
+		elseif match_ids[k.id] then
+			bg, brd = C.match_bg, C.match_brd
 		elseif has_bindings(k.id) then
 			bg, brd = C.bind_bg, C.bind_brd
 		else
@@ -841,6 +1287,16 @@ local function render()
 			col,
 			esc(k.label)
 		)
+		if has_menu(k.id) then
+			a[#a + 1] = string.format(
+				"{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}%s",
+				round(px + g.ku * 0.07),
+				round(py + g.ku * 0.02),
+				math.max(1, round(g.ku * 0.22)),
+				C.accent,
+				MENU_ICON
+			)
+		end
 	end
 
 	-- info panel: build the lines first, then size the background to fit them
@@ -848,6 +1304,19 @@ local function render()
 	local panel_lines, content_h
 	if hovered then
 		panel_lines, content_h = build_info_lines(hovered)
+	elseif query ~= "" then
+		panel_lines, content_h = build_search_lines()
+	elseif search_mode then
+		panel_lines = {
+			string.format(
+				"{\\fs%d\\1c&H%s&}Type to filter bindings.   {\\1c&H%s&}ESC{\\1c&H%s&} to stop searching.",
+				info_fs,
+				C.text,
+				C.accent,
+				C.text
+			),
+		}
+		content_h = info_fs * 1.2
 	else
 		local close_hint = "ESC"
 		local tk = toggle_key_id and ID2KEY[toggle_key_id]
@@ -856,7 +1325,7 @@ local function render()
 		end
 		panel_lines = {
 			string.format(
-				"{\\fs%d\\1c&H%s&}Move the mouse or press a key/button to see its bindings.   {\\1c&H%s&}%s{\\1c&H%s&} to close.",
+				"{\\fs%d\\1c&H%s&}Press or hover a key/button, or click the search box.   {\\1c&H%s&}%s{\\1c&H%s&} to close.",
 				info_fs,
 				C.text,
 				C.accent,
@@ -911,6 +1380,49 @@ local function render()
 		esc(lay_label)
 	)
 
+	-- search box, filling the header band right of the layout button
+	local sx = bx + bw + g.ku * 0.3
+	local sw = g.ox + GRID_W * g.ku - sx
+	if sw > g.ku * 2 then
+		search_rect = { x = sx, y = by, w = sw, h = bh }
+		local box_active = search_mode or query ~= ""
+		a[#a + 1] = string.format(
+			"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
+			round(sx),
+			round(by),
+			box_active and C.match_brd or C.bind_brd,
+			box_active and C.match_bg or C.bind_bg,
+			rect_draw(round(sw), round(bh))
+		)
+		local stext
+		if query == "" then
+			stext = string.format(
+				"{\\1c&H%s&}Search: %s",
+				C.text_dim,
+				search_mode and "type to filter bindings" or "click to type"
+			)
+		else
+			stext = string.format(
+				"{\\1c&H%s&}Search: {\\1c&H%s&}%s_{\\1c&H%s&}   %d hit%s   BS erase, ESC clear",
+				C.text,
+				C.match_brd,
+				esc(query),
+				C.text_dim,
+				#match_list,
+				#match_list == 1 and "" or "s"
+			)
+		end
+		a[#a + 1] = string.format(
+			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\q2}%s",
+			round(sx + g.ku * 0.3),
+			round(by + bh / 2),
+			bfs,
+			stext
+		)
+	else
+		search_rect = nil
+	end
+
 	-- cursor dot (sits exactly under the real pointer when spaces are aligned)
 	if mouse_x then
 		local r = math.max(3, round(g.ku * 0.06))
@@ -928,60 +1440,14 @@ local function render()
 end
 
 ----------------------------------------------------------------------
--- Keyboard capture: grab every physical key while the overlay is open, so
--- pressing a key highlights it exactly like hovering it with the mouse.
-----------------------------------------------------------------------
--- on_capture, cycle_layout and register_captures reference each other
--- (click on MBTN_LEFT -> cycle_layout -> register_captures -> closures over
--- on_capture), so forward-declare them to avoid relying on definition order.
-local cycle_layout, register_captures, on_capture, close
-
-on_capture = function(id, event)
-	if event == "up" then
-		return
-	end
-	if id and id == toggle_key_id then
-		close()
-		return
-	end
-	if id == "MBTN_LEFT" then
-		local pos = mp.get_property_native("mouse-pos")
-		if pos and button_rect then
-			local r = button_rect
-			if pos.x >= r.x and pos.x <= r.x + r.w and pos.y >= r.y and pos.y <= r.y + r.h then
-				cycle_layout()
-				return
-			end
-		end
-	end
-	if id and hovered ~= id then
-		hovered = id
-		render()
-	end
-end
-
-local function unregister_captures()
-	for _, name in ipairs(capture_names) do
-		mp.remove_key_binding(name)
-	end
-	capture_names = {}
-end
-
-register_captures = function()
-	unregister_captures()
-	for i, item in ipairs(build_capture_keys()) do
-		local id = item.id
-		local name = "keybind-visualizer-cap" .. i
-		capture_names[#capture_names + 1] = name
-		mp.add_forced_key_binding(item.key, name, function(e)
-			on_capture(id, e and e.event)
-		end, { complex = true })
-	end
-end
-
-----------------------------------------------------------------------
 -- Mouse / events
 ----------------------------------------------------------------------
+-- cycle_layout, register_captures, on_capture and close reference each
+-- other (search-box/layout-button clicks -> cycle_layout/search_mode,
+-- on_capture -> close, register_captures -> closures over on_capture), so
+-- forward-declare them to avoid relying on definition order.
+local cycle_layout, register_captures, on_capture, close
+
 local function on_mouse(_, val)
 	if not active then
 		return
@@ -1027,10 +1493,95 @@ cycle_layout = function()
 	layout_name = layout_names[idx % #layout_names + 1]
 	rebuild_keys()
 	hovered = nil
+	compute_matches()
 	if active then
 		register_captures()
 	end
 	render()
+end
+
+local function set_query(q)
+	query = q
+	compute_matches()
+	render()
+end
+
+local function point_in(rect, x, y)
+	return rect and x >= rect.x and x <= rect.x + rect.w and y >= rect.y and y <= rect.y + rect.h
+end
+
+----------------------------------------------------------------------
+-- Keyboard/mouse capture: grab every physical key and mouse button while
+-- the overlay is open, so pressing something highlights it exactly like
+-- hovering does, and NOTHING reaches the player underneath.
+----------------------------------------------------------------------
+on_capture = function(id, event)
+	if event == "up" then
+		return
+	end
+
+	if id == "MBTN_LEFT" then
+		local pos = mp.get_property_native("mouse-pos")
+		if pos then
+			if point_in(button_rect, pos.x, pos.y) then
+				cycle_layout()
+				return
+			end
+			if point_in(search_rect, pos.x, pos.y) then
+				search_mode = true
+				hovered = nil
+				render()
+				return
+			end
+		end
+		if search_mode then
+			search_mode = false
+		end
+		-- fall through: highlight MBTN_LEFT itself, like any other capture
+	elseif search_mode then
+		local k = ID2KEY[id]
+		local named = k and k.mpv and k.mpv:upper()
+		if named == "BS" then
+			set_query(query:sub(1, -2))
+			return
+		end
+		local ch = char_for_id(id)
+		if ch then
+			set_query(query .. ch)
+			return
+		end
+		-- any other key (arrows, F-keys, right click, ...) can't be typed,
+		-- so leave search mode and fall through to show what it's bound to
+		search_mode = false
+	end
+
+	if id and id == toggle_key_id then
+		close()
+		return
+	end
+	if id and hovered ~= id then
+		hovered = id
+		render()
+	end
+end
+
+local function unregister_captures()
+	for _, name in ipairs(capture_names) do
+		mp.remove_key_binding(name)
+	end
+	capture_names = {}
+end
+
+register_captures = function()
+	unregister_captures()
+	for i, item in ipairs(build_capture_keys()) do
+		local id = item.id
+		local name = "keybind-visualizer-cap" .. i
+		capture_names[#capture_names + 1] = name
+		mp.add_forced_key_binding(item.key, name, function(e)
+			on_capture(id, e and e.event)
+		end, { complex = true })
+	end
 end
 
 ----------------------------------------------------------------------
@@ -1042,6 +1593,9 @@ close = function()
 	end
 	active = false
 	hovered = nil
+	query = ""
+	match_ids, match_list = {}, {}
+	search_mode = false
 	toggle_key_id = nil
 	mp.unobserve_property(on_mouse)
 	mp.unobserve_property(on_resize)
@@ -1071,6 +1625,9 @@ local function open()
 	toggle_key_id = find_toggle_key_id()
 	active = true
 	hovered = nil
+	query = ""
+	match_ids, match_list = {}, {}
+	search_mode = false
 	mouse_x, mouse_y = nil, nil
 	local pos = mp.get_property_native("mouse-pos")
 	if pos then
@@ -1084,7 +1641,16 @@ local function open()
 	end
 	mp.observe_property("mouse-pos", "native", on_mouse)
 	mp.observe_property("osd-dimensions", "native", on_resize)
-	mp.add_forced_key_binding("ESC", "keybind-visualizer-esc", close)
+	mp.add_forced_key_binding("ESC", "keybind-visualizer-esc", function()
+		if query ~= "" then
+			set_query("")
+		elseif search_mode then
+			search_mode = false
+			render()
+		else
+			close()
+		end
+	end)
 	register_captures()
 	render()
 end
