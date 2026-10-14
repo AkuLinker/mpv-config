@@ -20,6 +20,7 @@ My mpv configs and scripts.
 
 - **google-translate.lua** — Opens Google Translate in the browser with the current subtitle line.
 - **time.lua** — Shows the estimated time at which the video will finish. Modified and shortened version of [this script](https://github.com/mustaqimM/mpv-scripts/blob/master/time.lua).
+- **osd_progress.lua** — Adds a progress bar under mpv’s osd-level 3 status line.
 - **seek_display.lua** — Seeks and shows the actual position after the seek completes.
 - **sub-search.lua** — Opens a searchable uosc menu with all subtitle lines and their timecodes. Then you can search and select any line to seek to that moment in the video.
 - **cache_cleaner.lua** — Automatically deletes stale cache files (watch_later and shaders_cache) on player shutdown. When verbose logging is enabled, each session writes its own log file to cache/cache_cleaner_logs/. Old log files are also cleaned up automatically.
@@ -53,6 +54,7 @@ A variety of shaders from various sources are also included.
 
 - **google-translate.lua** — Открывает Google Translate в браузере с текущим субтитром.
 - **time.lua** — Показывает время окончания видео. Изменённая и сокращённая версия [этого скрипта](https://github.com/mustaqimM/mpv-scripts/blob/master/time.lua).
+- **osd_progress.lua** — Добавляет прогресс бар под osd-level 3 в mpv.
 - **seek_display.lua** — Перемотка с отображением текущей позиции в видео.
 - **sub-search.lua** — Открывает меню uosc со всеми строками субтитров и таймкодами. Позволяет отфильтровать и выбрать любую строку чтобы перемотать видео к этому моменту.
 - **cache_cleaner.lua** — Автоматически удаляет устаревшие файлы кэша (watch_later и shaders_cache) при завершении плеера. При включённом подробном логировании каждая сессия пишет отдельный лог-файл в cache/cache_cleaner_logs/. Старые логи также удаляются автоматически.
