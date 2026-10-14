@@ -87,9 +87,11 @@ local function show_confirm(menu_type, question, uosc_binding, resume_after)
     -- Pause playback while the confirmation dialog is open, unless it's
     -- already paused. Remember whether we're the one who paused it, so we
     -- know whether to undo that once the menu closes.
-    if mp.get_property_bool('pause') then
-        paused_by_us = false
-    else
+    -- paused_by_us is only ever set to true here (it's reset in the close
+    -- handler). If the key is pressed again while our menu is already open,
+    -- playback is paused *by us*, and that must not be forgotten - otherwise
+    -- playback would never resume after the menu closes.
+    if not mp.get_property_bool('pause') then
         mp.set_property_bool('pause', true)
         paused_by_us = true
     end
