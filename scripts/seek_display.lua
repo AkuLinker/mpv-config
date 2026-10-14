@@ -26,12 +26,21 @@ local OSD_DURATION = 3   -- how long (in seconds) the OSD message stays on scree
 
 -- ============================================================
 
-local OSD_SETTLE_DELAY = 0.07
-
-local last_amount  = 0
-local settle_timer = nil
-
 local mp = require 'mp'
+
+local last_amount = 0
+
+-- True while we're waiting for our own seek to finish. The OSD is shown
+-- from the "playback-restart" event, which mpv fires once a seek has really
+-- completed - so the displayed position is always the final one, even on
+-- slow disks or network streams (a fixed delay could show a stale value).
+local pending_osd = false
+
+-- Safety net: if a seek never completes (unseekable stream, seek past the
+-- end of a file), forget about it after this many seconds so a later,
+-- unrelated playback-restart doesn't show a stale message.
+local PENDING_TIMEOUT = 2
+local pending_timer = nil
 
 local function format_time(seconds)
     if not seconds or seconds < 0 then seconds = 0 end
@@ -51,7 +60,7 @@ local function show_osd()
 
     local arrow = last_amount >= 0 and "⏩" or "⏪"
 
-    if mp.get_property_number("osd-level") >= 3 then
+    if (mp.get_property_number("osd-level") or 1) >= 3 then
         mp.osd_message(string.format(
             "%s %d sec",
             arrow, math.abs(last_amount)
@@ -71,18 +80,33 @@ local function show_osd()
     ), OSD_DURATION)
 end
 
+local function clear_pending()
+    pending_osd = false
+    if pending_timer then
+        pending_timer:kill()
+        pending_timer = nil
+    end
+end
+
+mp.register_event("playback-restart", function()
+    if pending_osd then
+        clear_pending()
+        show_osd()
+    end
+end)
+
+-- A new file also fires playback-restart; never show a seek message for it.
+mp.register_event("start-file", clear_pending)
+
 local function do_seek(amount)
     last_amount = amount
     local mode = EXACT and "exact" or "relative"
-    mp.commandv("seek", tostring(amount), mode)
 
-    if settle_timer then
-        settle_timer:kill()
-    end
-    settle_timer = mp.add_timeout(OSD_SETTLE_DELAY, function()
-        settle_timer = nil
-        show_osd()
-    end)
+    clear_pending()
+    pending_osd = true
+    pending_timer = mp.add_timeout(PENDING_TIMEOUT, clear_pending)
+
+    mp.commandv("seek", tostring(amount), mode)
 end
 
 local bindings = {
