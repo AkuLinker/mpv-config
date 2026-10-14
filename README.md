@@ -16,7 +16,6 @@ My mpv configs and scripts.
 - **[memo.lua](https://github.com/po5/memo)** — Saves watch history, and displays it in a nice menu.
 - **[keybind-visualizer.lua (modified)](https://github.com/v-amorim/mpv)** — Interactive on-screen keyboard/mouse overlay for mpv — press or hover any key/button to see what it's bound to, with a real-time layout switcher. I slightly modified the original script. Added the ability to toggle mpv's default bindings on and off, and to view them by pressing a key, not just by hovering with the mouse.
 - **[music-mode.lua (modified)](https://github.com/CogentRedTester/mpv-scripts/blob/master/music-mode.lua)** — Automatically switches to a "music mode" when playing audio files, and restores the original settings when a video file plays next.
-- **[autoload.lua](https://github.com/zc62/mpv-scripts/blob/master/autoloop.lua)** — Automatically set loop-file=inf for duration less given length.
 
 ### Custom scripts
 
@@ -28,7 +27,6 @@ My mpv configs and scripts.
 - **copy-video-info.lua** — Opens a uosc menu that lets you copy various pieces of information about the currently playing file to the system clipboard (video title, current subtitle, file path, timestamp, media info).
 - **toggle-bw.lua** — Toggles black and white mode and shows the message about it.
 - **return_from_seek.lua** — Remembers the position you seeked away from, if the seek distance was bigger than a configured threshold. Pressing the bound key jumps back to that position. The remembered position expires after a configured amount of time.
-- **keyboard_thumbfast.lua** — Lets scrub the mpv timeline with the keyboard (instead of the mouse) while still seeing uosc/thumbfast's thumbnail preview, then confirm or cancel the jump with Enter/Esc.
 - **anime-skip** — Skips anime openings and endings. Parses the title and episode from the filename, looks up the anime via Shikimori, resolves the title's MAL id, and queries api.aniskip.com for the timestamps. Caches the info per episode. Partially based on the code and idea from [this script](https://github.com/synacktraa/ani-skip).
 
 A variety of shaders from various sources are also included.
@@ -51,7 +49,6 @@ A variety of shaders from various sources are also included.
 - **[memo.lua](https://github.com/po5/memo)** — Сохраняет историю просмотренных видео и отображает это в красивом меню.
 - **[keybind-visualizer.lua (modified)](https://github.com/v-amorim/mpv)** — Интерактивная оверлей-визуализация клавиатуры и мыши для mpv — наводишь курсор или нажимаешь любую клавишу/кнопку и сразу видишь, что на неё забиндчено. Я слегка поменял оригинальный скрипт. Добавлена возможность включения и выключения дефолтных байдингов mpv и просмотр при их нажимании а не только наведения мышкой.
 - **[music-mode.lua (modified)](https://github.com/CogentRedTester/mpv-scripts/blob/master/music-mode.lua)** — Автоматически переключается в "музыкальный режим" при проигрывании аудио и возвращает исходные настройки, когда дальше идёт видео.
-- **[autoload.lua](https://github.com/zc62/mpv-scripts/blob/master/autoloop.lua)** — Автоматически устанавливает loop-file=inf для видео короче заданной длительности.
 
 ### Свои скрипты
 
@@ -63,7 +60,6 @@ A variety of shaders from various sources are also included.
 - **copy-video-info.lua** — Открывает uosc меню позволяющее копировать в клипборд различную информацию из воспроизводимого видео (название, текущий субтитр, путь к файлу, текущий тамймстамп и медиа данные).
 - **toggle-bw.lua** — Переключает чёрно-белый режим и показывает уведомление об этом.
 - **return_from_seek.lua** — Запоминает место в видео, с которого была сделана перемотка, если дистанция перемотки превысила заданный в конфиге порог. Нажатие забинженной кнопки возвращает плеер на эту позицию. Запомненная позиция «протухает» по истечении заданного в конфиге времени.
-- **keyboard_thumbfast.lua** — Позволяет мотать таймлайн mpv с клавиатуры (вместо мыши), при этом видя превью-картинку от uosc/thumbfast, и подтверждать или отменять прыжок клавишами Enter/Esc.
 - **anime-skip** — Пропускает опенинги и ендинги в аниме. Сначала парсит навзание и эпизод, ищет аниме через shikimori, находит mal id тайтла и обращается к api.aniskip.com за таймкодами. Кеширует информацию для эпизода. Частично код и идея взяты у [этого скрипта](https://github.com/synacktraa/ani-skip).
 
 Также используются шейдеры из различных источников.
