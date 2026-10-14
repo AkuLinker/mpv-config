@@ -1,55 +1,36 @@
--- mpv issue 5222
--- Automatically set loop-file=inf for duration <= given length. Default is 5s
--- Use autoloop_duration=n in script-opts/autoloop.conf to set your preferred length
--- Alternatively use script-opts=autoloop-autoloop_duration=n in mpv.conf (takes priority)
--- Also disables the save-position-on-quit for this file, if it qualifies for looping.
+-- autoloop.lua
+--
+-- Loops short files (GIF-like clips) automatically: if a file's duration is
+-- at or below autoloop_duration seconds, loop-file=inf is set for that file.
+-- Saving the playback position on quit is also disabled for such files.
+--
+-- Both settings are applied as *file-local* options, so mpv itself restores
+-- the previous values as soon as the next file starts. No manual "unloop"
+-- logic is needed, and a loop you enable yourself (e.g. with the L key) is
+-- never touched by this script.
+--
+-- Files with unknown or zero duration (still images, live streams) are
+-- ignored, so a single image never gets stuck looping in a playlist.
+--
+-- Configuration: script-opts/autoloop.conf
+--     autoloop_duration=5
+-- or in mpv.conf:
+--     script-opts-append=autoloop-autoloop_duration=5
 
+local mp = require 'mp'
+local options = require 'mp.options'
 
-require 'mp.options'
+local o = {
+    autoloop_duration = 5,
+}
+options.read_options(o, "autoloop")
 
-function getOption()
-    -- Use recommended way to get options
-    local options = {autoloop_duration = 5}
-    read_options(options)
-    autoloop_duration = options.autoloop_duration
+mp.register_event("file-loaded", function()
+    local duration = mp.get_property_number("duration")
+    if not duration or duration <= 0 then return end
 
-
-    -- Keep old way just for compatibility (remove lines 15-27 soon)
-    if autoloop_duration ~= 5 then
-        return
-    end
-
-    local opt = tonumber(mp.get_opt("autoloop-duration"))
-    if not opt then
-        return
-    end
-    print("Depracted configuration!  Please use script-opts directory to set auto_loop duration")
-    print("Or use 'script-opts=autoloop-autoloop_duration' in mpv.conf")
-    autoloop_duration = opt
-    -- Remove lines 15-27 soon
-end
-
-function set_loop()
-    local duration = mp.get_property_native("duration")
-
-    -- Checks whether the loop status was changed for the last file
-    was_loop = mp.get_property_native("loop-file")
-
-    -- Cancel operation if there is no file duration
-    if not duration then
-        return
-    end
-
-    -- Loops file if was_loop is false, and file meets requirements
-    if not was_loop and duration <= autoloop_duration then
-        mp.set_property_native("loop-file", true)
+    if duration <= o.autoloop_duration then
+        mp.set_property("file-local-options/loop-file", "inf")
         mp.set_property_bool("file-local-options/save-position-on-quit", false)
-        -- Unloops file if was_loop is true, and file does not meet requirements
-    elseif was_loop and duration > autoloop_duration then
-        mp.set_property_native("loop-file", false)
     end
-end
-
-
-getOption()
-mp.register_event("file-loaded", set_loop)
+end)
