@@ -51,9 +51,10 @@ READ BEFORE USE:
   HOW IT WORKS (on keypress):
     1. Parse the current filename via anitopy (through lookup.py) to get
        the anime title, season (if present) and episode number.
-    2. Query Shikimori's GraphQL API for up to 5 candidates matching the
-       title, each with all of its name variants (name/russian/japanese/
-       english/synonyms) and its MyAnimeList ID (malId) in the same response.
+    2. Query Shikimori's GraphQL API for up to SHIKIMORI_SEARCH_LIMIT
+       candidates matching the title, each with all of its name variants
+       (name/russian/japanese/english/synonyms) and its MyAnimeList ID
+       (malId) in the same response.
     3. Fuzzy-match our title against every name variant of every candidate
        (via match.py) and take the best-scoring one, provided it clears a
        minimum similarity threshold; below that, treat it as not found.
@@ -398,29 +399,34 @@ local function parse_filename(filename)
     if res == nil or res.status ~= 0 then
         msg.error("anime-skip: anitopy lookup failed"
             .. (res and res.stderr and (": " .. res.stderr) or ""))
-        return nil, nil, nil, nil
+        return nil, nil, nil, nil, nil
     end
     if not res.stdout or res.stdout == "" then
         msg.error("anime-skip: anitopy lookup returned empty output")
-        return nil, nil, nil, nil
+        return nil, nil, nil, nil, nil
     end
 
     local ok, info = pcall(utils.parse_json, res.stdout)
     if not ok or type(info) ~= "table" then
         msg.error("anime-skip: failed to parse anitopy JSON output")
-        return nil, nil, nil, nil
+        return nil, nil, nil, nil, nil
     end
 
     local title = info.anime_title
     if not title or title == "" then
-        return nil, nil, nil, nil
+        return nil, nil, nil, nil, nil
     end
 
     -- anitopy may return a list for batch releases (e.g. "01-02");
     -- just take the first episode in that case. If no episode marker was
     -- found at all (typical for movies/single-segment OVAs), default to
-    -- episode 1 rather than treating it as a failure.
+    -- episode 1 rather than treating it as a failure. episode_explicit
+    -- records which case this was - a movie has no episode marker in its
+    -- filename at all, so the DEFAULTED episode=1 should never be treated
+    -- as evidence of a numbered-episode context (see its use further
+    -- down, gating the season/part grouping in match.py).
     local episode = info.episode_number
+    local episode_explicit = episode ~= nil
     if type(episode) == "table" then episode = episode[1] end
     episode = episode and tonumber(episode) or 1
 
@@ -433,16 +439,23 @@ local function parse_filename(filename)
         search_title = title .. " S" .. season
     end
 
-    return search_title, title, season, episode
+    return search_title, title, season, episode, episode_explicit
 end
 
 ----------------------------------------------------------------------
 -- Shikimori + AniSkip resolution
 ----------------------------------------------------------------------
 
+-- How many Shikimori search results to consider. Our own fuzzy-match
+-- threshold (FUZZY_MATCH_THRESHOLD) and the stricter part-grouping
+-- threshold already filter out low-quality candidates, so a larger pool
+-- just gives obscure/short titles more of a chance to be found at all
+-- without risking noisier results getting through.
+local SHIKIMORI_SEARCH_LIMIT = 10
+
 local SHIKIMORI_GRAPHQL_QUERY = [[
-query($s: String) {
-  animes(search: $s, limit: 5) {
+query($s: String, $limit: Int) {
+  animes(search: $s, limit: $limit) {
     id
     malId
     name
@@ -451,14 +464,19 @@ query($s: String) {
     english
     synonyms
     episodes
+    kind
   }
 }
 ]]
 
--- Queries Shikimori's GraphQL API for up to 5 candidates. Returns the raw
--- list of anime objects (each with malId + all name variants), or nil+err.
+-- Queries Shikimori's GraphQL API for up to SHIKIMORI_SEARCH_LIMIT
+-- candidates. Returns the raw list of anime objects (each with malId +
+-- all name variants), or nil+err.
 local function shikimori_graphql_search(search_title)
-    local body = utils.format_json({query = SHIKIMORI_GRAPHQL_QUERY, variables = {s = search_title}})
+    local body = utils.format_json({
+        query = SHIKIMORI_GRAPHQL_QUERY,
+        variables = {s = search_title, limit = SHIKIMORI_SEARCH_LIMIT},
+    })
     local res = run_curl({
         "curl", "-s", "-g", "-A", USER_AGENT,
         "-H", "Content-Type: application/json",
@@ -505,7 +523,7 @@ end
 -- season 1..N straight through) - see match.py for the actual logic.
 -- Returns: best_index, score, resolved_episode (nil if no part-offset
 -- adjustment applied - meaning the original episode number is correct).
-local function fuzzy_match_index(title, season, episode, animes)
+local function fuzzy_match_index(title, season, episode, episode_explicit, animes)
     local candidates = {}
     for i, a in ipairs(animes) do
         local fields = {}
@@ -516,14 +534,21 @@ local function fuzzy_match_index(title, season, episode, animes)
         if type(a.synonyms) == "table" then
             for _, syn in ipairs(a.synonyms) do table.insert(fields, syn) end
         end
-        table.insert(candidates, {index = i, fields = fields, episodes = a.episodes})
+        table.insert(candidates, {index = i, fields = fields, episodes = a.episodes, kind = a.kind})
     end
 
     local payload_table = {title = title, candidates = candidates}
     if season then
         payload_table.season = tonumber(season)
     end
-    if episode then
+    -- Only send `episode` when it was actually found in the filename, not
+    -- when we defaulted it to 1 (typical for movies/one-off releases with
+    -- no episode marker at all). match.py's season/part grouping treats a
+    -- missing `episode` as "don't try to place this in a sequence" - a
+    -- defaulted 1 would otherwise look exactly like a real episode 1 and
+    -- could get swept into season/part arithmetic that doesn't apply to
+    -- a movie at all.
+    if episode and episode_explicit then
         payload_table.episode = tonumber(episode)
     end
     local payload = utils.format_json(payload_table)
@@ -558,16 +583,16 @@ end
 -- actually use (may differ from `episode` if a multi-part season offset
 -- was applied - see fuzzy_match_index).
 -- The Shikimori query itself still uses search_title (title + season, if
--- any) since that helps THEIR ranking surface relevant candidates in the
--- top 5 - but our own disambiguation (fuzzy_match_index) scores title and
+-- any) since that helps THEIR ranking surface relevant candidates within
+-- SHIKIMORI_SEARCH_LIMIT - but our own disambiguation (fuzzy_match_index) scores title and
 -- season as two separate signals, since plain text similarity alone can't
 -- reliably tell "no season" apart from "wrong season" (a season-less name
 -- is textually closer to "title S4" than a real "4th Season" name is).
-local function shikimori_resolve(search_title, base_title, season, episode)
+local function shikimori_resolve(search_title, base_title, season, episode, episode_explicit)
     local animes, err = shikimori_graphql_search(search_title)
     if not animes then return nil, nil, episode, nil, err end
 
-    local best_index, score, resolved_episode = fuzzy_match_index(base_title, season, episode, animes)
+    local best_index, score, resolved_episode = fuzzy_match_index(base_title, season, episode, episode_explicit, animes)
     if not best_index or score < FUZZY_MATCH_THRESHOLD then
         return nil, nil, episode, nil, "shikimori_not_found"
     end
@@ -758,7 +783,7 @@ local function resolve_current_anime()
         return state.found
     end
 
-    local search_title, display_title, season, episode = parse_filename(filename)
+    local search_title, display_title, season, episode, episode_explicit = parse_filename(filename)
     state.title_guess, state.season, state.episode = display_title, season, episode
 
     if not search_title then
@@ -766,7 +791,8 @@ local function resolve_current_anime()
         return false
     end
 
-    local shiki_id, mal_id, resolved_episode, resolved_title, resolve_err = shikimori_resolve(search_title, display_title, season, episode)
+    local shiki_id, mal_id, resolved_episode, resolved_title, resolve_err =
+        shikimori_resolve(search_title, display_title, season, episode, episode_explicit)
     if not mal_id then
         fail(filename, display_title, season, episode, nil, nil, resolve_err)
         return false
@@ -978,6 +1004,30 @@ local function fmt_time(t)
     return string.format("%d:%02d", m, s)
 end
 
+-- Wraps `text` at word boundaries so no single line exceeds `width`
+-- characters. uosc computes the menu's width from its widest line, so
+-- this is how we keep a very long anime title from blowing the whole
+-- menu out to an unreasonable size - relies on uosc 5.13.0's multi-line
+-- menu label support (fixed in #1210).
+local MENU_TITLE_WRAP_WIDTH = 60
+
+local function wrap_text(text, width)
+    local lines = {}
+    local line = ""
+    for word in text:gmatch("%S+") do
+        if line == "" then
+            line = word
+        elseif #line + 1 + #word <= width then
+            line = line .. " " .. word
+        else
+            table.insert(lines, line)
+            line = word
+        end
+    end
+    if line ~= "" then table.insert(lines, line) end
+    return table.concat(lines, "\n")
+end
+
 local function build_menu_items()
     local items = {}
 
@@ -996,7 +1046,10 @@ local function build_menu_items()
         table.insert(items, info("Not resolved yet - open this menu again after a moment"))
     else
         if state.title_guess then
-            table.insert(items, {title = "Name: " .. state.title_guess, value = "ignore", selectable = false})
+            table.insert(items, {
+                title = "Name: " .. wrap_text(state.title_guess, MENU_TITLE_WRAP_WIDTH),
+                value = "ignore", selectable = false,
+            })
         end
         local info_parts = {}
         if state.season then table.insert(info_parts, "Season " .. tostring(state.season)) end

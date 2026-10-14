@@ -156,18 +156,34 @@ def extract_part_number(fields):
 
 
 def extract_season_number(fields):
-    """Season number (2..10) implied by season_markers() text, or 1 if no
+    """Season number (2..10) implied by the candidate's text, or 1 if no
     field declares any season at all. Used to order same-franchise
     candidates when the FILENAME ITSELF has no season marker (target_season
     is None) but some fansub groups number episodes straight through
     multiple separate season entries without ever resetting or marking
-    which season - see the target_season is None branch in main()."""
+    which season - see the target_season is None branch in main().
+
+    Two passes: explicit season wording first ("season N", "Nth season",
+    "sN", roman numerals), and only if NONE of the fields has any, fall
+    back to "part N" as a season stand-in. Doing it in one pass would
+    misread "3rd Season Part 2" as season 2 (since "part 2" is also a
+    season-2 marker and n is checked in ascending order) - the sub-part
+    of a season must never override the season itself."""
     for field in fields:
         if not field:
             continue
         loose = loose_normalize(field)
         for n in range(2, 11):
-            if matches_season(loose, n):
+            explicit = season_markers(n) - {"part " + str(n)}
+            if any(has_marker(loose, m) for m in explicit):
+                return n
+
+    for field in fields:
+        if not field:
+            continue
+        loose = loose_normalize(field)
+        for n in range(2, 11):
+            if has_marker(loose, "part " + str(n)):
                 return n
     return 1
 
@@ -205,7 +221,7 @@ def main():
     try:
         payload = json.loads(sys.stdin.read())
         title = payload["title"]
-        candidates = payload["candidates"]  # [{"index", "fields", "episodes"}, ...]
+        candidates = payload["candidates"]  # [{"index", "fields", "episodes", "kind"}, ...]
     except Exception as e:
         print("match.py: invalid input: {}".format(e), file=sys.stderr)
         sys.exit(1)
@@ -231,6 +247,7 @@ def main():
             # first one is just "Season 2" with no part suffix.
             "part": (extract_part_number(fields) or 1) if (matches_season_flag and is_same_franchise) else None,
             "episodes": cand.get("episodes"),
+            "kind": cand.get("kind"),
         })
 
     if target_episode is not None:
@@ -241,7 +258,10 @@ def main():
             # franchise (see threshold above). A single plain "Season N"
             # candidate (no siblings) never enters this path, so ordinary
             # single-part seasons behave exactly as before.
-            part_candidates = [c for c in scored if c["part"] is not None]
+            # kind == "tv" guards against a movie/OVA/special with a
+            # similar enough title being swept into the season sequence -
+            # those aren't part of the main run's episode count at all.
+            part_candidates = [c for c in scored if c["part"] is not None and c["kind"] == "tv"]
             if len(part_candidates) >= 2:
                 resolved = resolve_part(part_candidates, target_episode)
                 if resolved:
@@ -263,11 +283,27 @@ def main():
             # grouping could just be colliding an unrelated same-titled
             # movie/special (which would also default to "season 1") with
             # the real season-1 entry.
+            # kind == "tv": without this, a movie or an ONA/OVA spin-off
+            # that's merely in the same franchise (even just cross-
+            # referenced via a synonym, like an official mini-anime) can
+            # default to "season 1" same as the real season 1 and get
+            # spliced into the cumulative count ahead of the real later
+            # seasons - this is exactly what happened with Kusuriya no
+            # Hitorigoto's "Maomao no Hitorigoto" ONA spin-off.
+            # Sort key is season * 100 + part-within-season, so e.g.
+            # "3rd Season" (301) always sorts before "3rd Season Part 2"
+            # (302), and both after "2nd Season" (201) - without the part
+            # term, entries of the same season would tie and fall back to
+            # whatever order Shikimori happened to return them in.
             season_candidates = [
-                {"index": c["index"], "part": extract_season_number(c["fields"]), "episodes": c["episodes"]}
-                for c in scored if c["same_franchise"]
+                {
+                    "index": c["index"],
+                    "part": extract_season_number(c["fields"]) * 100 + (extract_part_number(c["fields"]) or 1),
+                    "episodes": c["episodes"],
+                }
+                for c in scored if c["same_franchise"] and c["kind"] == "tv"
             ]
-            if len(season_candidates) >= 2 and any(c["part"] > 1 for c in season_candidates):
+            if len(season_candidates) >= 2 and any(c["part"] >= 200 for c in season_candidates):
                 resolved = resolve_part(season_candidates, target_episode)
                 if resolved:
                     best_index, local_episode = resolved
