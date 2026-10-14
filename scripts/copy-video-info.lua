@@ -10,42 +10,47 @@ DEPENDENCIES
 ------------------------------------------------------------------------------
 1) uosc (https://github.com/tomasklaen/uosc)
    This script does not draw any UI itself - it sends a menu definition to
-   uosc via script messages and lets uosc render it. Without uosc installed
-   and running, the menu will simply never appear.
+   uosc via script messages and lets uosc render it.
 
-2) A clipboard tool available on PATH, depending on your OS:
+2) Clipboard:
    - Linux (Wayland): wl-copy   (package "wl-clipboard")
    - Linux (X11):     xclip     (or xsel as a fallback)
-   - Windows:          PowerShell (built in, used via Set-Clipboard)
-   - macOS:            pbcopy   (built into macOS, nothing to install)
-   The script auto-detects your platform/session once on load and picks the
-   most likely tool, falling back to alternatives on Linux if the first one
-   isn't found.
+   - Windows / macOS: nothing to install. mpv 0.40+ writes the clipboard
+     itself (Unicode-safe, no extra process). On older mpv the script falls
+     back to PowerShell (Windows) or pbcopy (macOS).
 
-   NOTE ON IMPLEMENTATION: clipboard copying is done via Lua's own
-   io.popen(cmd, "w") rather than mpv's "subprocess" command. Clipboard
-   tools like wl-copy/xclip/xsel fork themselves into the background to
-   keep serving the clipboard selection. If we captured their stdout via
-   mpv's subprocess command, mpv could hang waiting for that pipe to close
-   (which may never happen) - including hanging on player quit. io.popen
-   only writes to the process' stdin and doesn't wait on its stdout, so it
-   doesn't run into that problem.
+   On Linux the external tool is used first on purpose: wl-copy/xclip keep
+   serving the copied text after mpv quits. mpv's own clipboard is used as
+   a fallback there (only works when mpv runs as a native Wayland window).
+
+   NOTE ON IMPLEMENTATION: wl-copy/xclip/xsel fork themselves into the
+   background to keep serving the clipboard. If that background process kept
+   mpv's output pipes open, mpv would wait on them forever (even on quit).
+   The tools are therefore started through a tiny shell wrapper that sends
+   their output to /dev/null - the shell exits as soon as the copy is done
+   and its exit code tells whether it worked.
 
 ------------------------------------------------------------------------------
 SETUP / KEYBINDING
 ------------------------------------------------------------------------------
-This script intentionally does NOT bind itself to any key (key = nil below),
-as requested. To actually be able to open the menu, add a line like this to
-your input.conf:
+Not bound to any key by default. Add a line like this to input.conf:
 
-    ctrl+c script-binding copy-video-info/open-menu
+    ctrl+c script-binding copy-video-info/open-copy-menu
 
-(pick whatever key combination you like; "ctrl+c" is just an example)
+------------------------------------------------------------------------------
+OPTIONS  (script-opts/copy-video-info.conf)
+------------------------------------------------------------------------------
+    pause_on_open=yes      pause playback when the menu opens
+    resume_on_close=yes    when the menu closes, resume playback if it was
+                           playing before (same as sub-search and
+                           confirm-delete-file). Set to no to stay paused
+                           after copying, like older versions of this script.
 
 ------------------------------------------------------------------------------
 BEHAVIOR
 ------------------------------------------------------------------------------
-- Opening the menu automatically pauses playback.
+- Opening the menu pauses playback; closing it restores the previous state
+  (configurable, see OPTIONS).
 - Menu items are numbered; you can either click an item or press the
   corresponding number key (1-7) to select it.
 - After copying, an OSD message confirms what was copied.
@@ -55,7 +60,16 @@ local mp = require 'mp'
 local msg = require 'mp.msg'
 local utils = require 'mp.utils'
 
+local o = {
+    pause_on_open = true,
+    resume_on_close = true,
+}
+require('mp.options').read_options(o, 'copy-video-info')
+
 local script_name = mp.get_script_name()
+
+local platform = mp.get_property_native("platform")
+    or (package.config:sub(1, 1) == "\\" and "windows" or "linux")
 
 ------------------------------------------------------------------------------
 -- Small formatting helpers
@@ -89,74 +103,71 @@ local function show_osd(text)
 end
 
 ------------------------------------------------------------------------------
--- Clipboard handling (cross-platform, via io.popen)
+-- Clipboard handling (cross-platform)
 ------------------------------------------------------------------------------
 
--- Pure-Lua way to detect Windows: the standard "package.config" string
--- starts with the directory separator for the current platform ("\" on
--- Windows, "/" everywhere else). This doesn't depend on any mpv property.
-local function is_windows()
-    return package.config:sub(1, 1) == "\\"
+-- mpv 0.40+ built-in clipboard. Returns true on success.
+local function copy_native(text)
+    return mp.set_property("clipboard/text", text) == true
 end
 
--- Checks whether a shell command is available on PATH (unix only; on
--- Windows/macOS we always use tools that are guaranteed to be present).
-local function command_exists(cmd)
-    local pipe = io.popen("type " .. cmd .. " > /dev/null 2> /dev/null; printf \"$?\"", "r")
-    if pipe == nil then return false end
-    local exists = pipe:read("*a") == "0"
-    pipe:close()
-    return exists
+-- External tool for the current OS. Text is passed on stdin (stdin_data),
+-- so there's no quoting/escaping and no length limit.
+local function external_args()
+    if platform == "windows" then
+        -- Read stdin explicitly as UTF-8, otherwise PowerShell decodes it
+        -- with the console codepage and non-ASCII text gets garbled.
+        return {
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            "[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; "
+            .. "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+        }
+    elseif platform == "darwin" then
+        -- pbcopy needs a UTF-8 locale, which isn't set when mpv is started
+        -- from Finder.
+        return { "sh", "-c", "LANG=en_US.UTF-8 pbcopy" }
+    end
+
+    -- Linux / BSD: pick the tool matching the session, fall back to others.
+    -- Exit code 127 = no tool found.
+    return { "sh", "-c", [[
+{
+  if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-copy >/dev/null 2>&1; then
+    wl-copy
+  elif command -v xclip >/dev/null 2>&1; then
+    xclip -silent -in -selection clipboard
+  elif command -v xsel >/dev/null 2>&1; then
+    xsel --clipboard --input
+  elif command -v wl-copy >/dev/null 2>&1; then
+    wl-copy
+  else
+    exit 127
+  fi
+} >/dev/null 2>&1
+]] }
 end
 
--- Decides which shell command line to use for copying to the clipboard.
--- Computed once when the script loads (not on every copy).
-local function detect_clipboard_cmd()
-    if is_windows() then
-        -- Read the piped stdin and set it as clipboard content via
-        -- PowerShell, which handles multi-line/unicode text better than
-        -- passing it as a quoted command-line argument to clip.exe.
-        return "powershell -NoProfile -Command \"$input | Set-Clipboard\""
-    end
-
-    -- macOS
-    if command_exists("pbcopy") then
-        return "pbcopy"
-    end
-
-    -- Linux / BSD: prefer the tool matching the current session type.
-    local session_type = os.getenv("XDG_SESSION_TYPE")
-    local is_wayland = session_type == "wayland" or os.getenv("WAYLAND_DISPLAY") ~= nil
-
-    if is_wayland and command_exists("wl-copy") then
-        return "wl-copy"
-    end
-    if command_exists("xclip") then
-        return "xclip -silent -in -selection clipboard"
-    end
-    if command_exists("xsel") then
-        return "xsel --clipboard --input"
-    end
-    if command_exists("wl-copy") then
-        return "wl-copy"
-    end
-
-    msg.error("No supported clipboard tool found (tried pbcopy/wl-copy/xclip/xsel).")
-    return nil
+local function copy_external(text)
+    local res = mp.command_native({
+        name = "subprocess",
+        args = external_args(),
+        stdin_data = text,
+        playback_only = false,
+        capture_stdout = false,
+        capture_stderr = false,
+    })
+    if res and res.status == 0 then return true end
+    msg.verbose("external clipboard tool failed, status: " .. tostring(res and res.status))
+    return false
 end
 
-local clipboard_cmd = detect_clipboard_cmd()
-
--- Writes text to the clipboard command's stdin. Returns true on success.
+-- Writes text to the clipboard. Returns true on success.
 local function copy_to_clipboard(text)
-    if clipboard_cmd == nil then return false end
-
-    local pipe = io.popen(clipboard_cmd, "w")
-    if pipe == nil then return false end
-
-    pipe:write(text)
-    pipe:close()
-    return true
+    if platform == "windows" or platform == "darwin" then
+        return copy_native(text) or copy_external(text)
+    end
+    -- Linux: external tool first (survives mpv quitting), native as fallback
+    return copy_external(text) or copy_native(text)
 end
 
 ------------------------------------------------------------------------------
@@ -190,13 +201,21 @@ local function get_file_path()
     local path = mp.get_property("path")
     if path == nil then return nil end
 
-    -- Leave URLs and already-absolute paths untouched, otherwise resolve
-    -- relative paths against mpv's working directory.
-    local is_url = path:match("^%a[%w+.-]*://") ~= nil
+    -- URLs are returned untouched
+    if path:match("^%a[%w+.-]*://") then return path end
+
+    -- mpv 0.39+: let mpv make the path absolute and clean it up
+    local normalized = mp.command_native({"normalize-path", path})
+    if type(normalized) == "string" and normalized ~= "" then
+        return normalized
+    end
+
+    -- Older mpv: resolve relative paths against mpv's working directory.
     local is_unix_absolute = path:sub(1, 1) == "/"
     local is_windows_absolute = path:match("^%a:[\\/]") ~= nil
+        or path:match("^[\\/][\\/]") ~= nil -- UNC path (\\server\share)
 
-    if not is_url and not is_unix_absolute and not is_windows_absolute then
+    if not is_unix_absolute and not is_windows_absolute then
         local dir = mp.get_property("working-directory")
         if dir then
             path = utils.join_path(dir, path)
@@ -223,7 +242,7 @@ local function get_short_media_info()
     local fps = mp.get_property_number("container-fps") or mp.get_property_number("estimated-vf-fps")
 
     local lines = {}
-    table.insert(lines, "Resolution: " .. (width and (width .. "x" .. height) or "N/A"))
+    table.insert(lines, "Resolution: " .. ((width and height) and (width .. "x" .. height) or "N/A"))
     table.insert(lines, "Video codec: " .. (video_format or "N/A"))
     table.insert(lines, "Audio codec: " .. (audio_codec or "N/A"))
     table.insert(lines, "FPS: " .. (fps and string.format("%.3f", fps) or "N/A"))
@@ -331,11 +350,21 @@ local function handle_selection(value)
         show_osd(get_label_for(value) .. " copied to clipboard")
     else
         show_osd("Failed to copy to clipboard (no clipboard tool found)")
-        msg.warn("Could not copy to clipboard - clipboard_cmd is nil or io.popen failed.")
+        msg.warn("Could not copy to clipboard - no working clipboard method.")
     end
 end
 
 local MENU_TYPE = "copy_video_info_menu"
+
+-- True if *this script* paused playback when the menu was opened.
+local paused_by_us = false
+
+local function restore_pause()
+    if paused_by_us and o.resume_on_close then
+        mp.set_property_bool("pause", false)
+    end
+    paused_by_us = false
+end
 
 -- Handles all events uosc sends back for our menu (callback mode).
 mp.register_script_message("copy-video-info-menu-event", function(json)
@@ -351,12 +380,18 @@ mp.register_script_message("copy-video-info-menu-event", function(json)
             handle_selection(menu_items[index].value)
             mp.commandv("script-message-to", "uosc", "close-menu", MENU_TYPE)
         end
+    elseif event.type == "close" then
+        restore_pause()
     end
 end)
 
 local function open_menu()
-    -- Pause playback while the menu is open, as requested.
-    mp.set_property_bool("pause", true)
+    -- Pause while the menu is open; remember whether we did it, so only our
+    -- own pause is undone when the menu closes.
+    if o.pause_on_open and not mp.get_property_bool("pause") then
+        mp.set_property_bool("pause", true)
+        paused_by_us = true
+    end
 
     local menu = {
         type = MENU_TYPE,
@@ -378,7 +413,6 @@ local function open_menu()
     mp.commandv("script-message-to", "uosc", "open-menu", utils.format_json(menu))
 end
 
--- Registered with key = nil, so it is NOT bound to anything by default.
--- Bind it yourself in input.conf, e.g.:
---   ctrl+c script-binding copy-video-info/open-menu
+-- Not bound to anything by default. Bind it in input.conf, e.g.:
+--   ctrl+c script-binding copy-video-info/open-copy-menu
 mp.add_key_binding(nil, "open-copy-menu", open_menu)
