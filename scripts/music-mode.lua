@@ -25,6 +25,8 @@ built-in profile-restore mechanism (profile-restore=copy-equal, already set on
 the music-mode profile in mpv.conf) to automatically revert exactly the options
 that music-mode changed, back to whatever they were immediately before it was
 applied. `undo_profile` is no longer used and can be left unset.
+PATCHED (local): activate()/deactivate() are now no-ops when music mode is
+already in the requested state.
 -------------------------------------------------------------------------------
 
 ]]--
@@ -119,6 +121,10 @@ local musicMode = false
 
 --enables music mode
 local function activate()
+    --PATCHED: don't apply the profile a second time while already active
+    --(e.g. `script-message music-mode on` twice) - that would overwrite
+    --the profile-restore backup and break restoring later.
+    if musicMode then return end
     if o.profile ~= "" then mp.commandv('apply-profile', o.profile) end
     mp.commandv('enable-section', o.input_section, "allow-vo-dragging+allow-hide-cursor")
     mp.osd_message('Music Mode enabled')
@@ -131,6 +137,8 @@ end
 
 --disables music mode
 local function deactivate()
+    --PATCHED: nothing to restore if music mode isn't active
+    if not musicMode then return end
     --PATCHED: revert whatever `profile` changed via mpv's own profile-restore
     --mechanism (requires profile-restore=copy-equal on the profile itself),
     --instead of applying a separately maintained undo_profile.
